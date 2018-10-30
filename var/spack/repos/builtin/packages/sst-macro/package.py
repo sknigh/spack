@@ -31,20 +31,27 @@ class SstMacro(AutotoolsPackage):
     depends_on('m4', type='build', when='@develop')
 
     depends_on('binutils', type='build')
-    depends_on('zlib', type=('build', 'link'))
-    depends_on('otf2', when='+otf2')
-    depends_on('llvm+clang@:5.99.99', when='+skeletonizer')
+    depends_on('llvm+clang@:5', when='@:8.0.0+skeletonizer')
+    depends_on('llvm+clang', when='@8.1.0:+skeletonizer')
     depends_on('mpi', when='+mpi')
+    depends_on('otf2', when='+otf2')
     depends_on('sst-core@8.0.0', when='@8.0.0 +core')
     depends_on('sst-core@develop', when='@develop +core')
+    depends_on('vtk@8.1.0:~haru+osmesa', when='+vtk')
+    depends_on('zlib', type=('build', 'link'))
+
+    # VTK is not available before v8.1.0
+    conflicts('+vtk', when='@:8.0.0')
 
     variant('core', default=False, description='Use SST Core for PDES')
+    variant('debug', default=False, description='Build with debug flags and link to address sanitizer')
     variant('mpi', default=True, description='Enable distributed PDES simulation')
     variant('otf2', default=False, description='Enable OTF2 trace emission and replay support')
     variant('shared', default=True, description='Build shared libraries')
     variant('skeletonizer', default=False, description='Enable Clang source-to-source autoskeletonization')
     variant('static', default=True, description='Build static libraries')
     variant('threaded', default=False, description='Enable thread-parallel PDES simulation')
+    variant('vtk', default=False, description='Enable VTK visualization support ')
 
     @run_before('autoreconf')
     def bootstrap(self):
@@ -54,11 +61,16 @@ class SstMacro(AutotoolsPackage):
     def configure_args(self):
         args = ['--disable-regex']
 
-        # Set CFLAGS and CXXFLAGS so they won't automatically insert '-g'
-        env['CFLAGS'] = '-O2'
-        env['CXXFLAGS'] = '-O2'
-
         spec = self.spec
+        if '+debug' in spec:
+            flags = '-g -O1 -fsanitize=address -fsanitize-recover=address'
+            env['CFLAGS'] = flags
+            env['CXXFLAGS'] = flags
+            env['LDFLAGS'] = '-fsanitize=address'
+        else:
+            env['CFLAGS'] = '-O2'
+            env['CXXFLAGS'] = '-O2'
+
         args.append(
             '--enable-static=%s' % ('yes' if '+static' in spec else 'no'))
         args.append(
@@ -73,6 +85,15 @@ class SstMacro(AutotoolsPackage):
 
             if '+skeletonizer' in spec:
                 args.append('--with-clang=' + spec['llvm'].prefix)
+
+        if spec.satisfies("@8.1.0:"):
+            # Optional VTK support
+            if '+vtk' in spec:
+                args.extend([
+                    '--with-vtk=%s' % self.spec['vtk'].prefix,
+                    # VTK obnoxiously suffixes paths with a major.minor string
+                    '--enable-vtk=%s' % self.spec['vtk'].version.up_to(2),
+                ])
 
         if '+core' in spec:
             args.append('--with-sst-core=%s' % spec['sst-core'].prefix)
