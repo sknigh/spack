@@ -20,7 +20,8 @@ import spack.spec
 import spack.util.spack_json as sjson
 import spack.config
 from spack.spec import Spec
-
+from spack.util.multispec import ParallelConcretizer, MultiSpec
+from spack.util.multiproc_installer import MultiProcSpecInstaller
 
 #: environment variable used to indicate the active environment
 spack_env_var = 'SPACK_ENV'
@@ -553,7 +554,7 @@ class Environment(object):
                 del self.concretized_order[i]
                 del self.specs_by_hash[dag_hash]
 
-    def concretize(self, force=False):
+    def concretize(self, nproc=1, force=False):
         """Concretize user_specs in this environment.
 
         Only concretizes specs that haven't been concretized yet unless
@@ -565,6 +566,7 @@ class Environment(object):
         Arguments:
             force (bool): re-concretize ALL specs, even those that were
                already concretized
+            nproc (int): number of parallel processes to use
         """
         if force:
             # Clear previously concretized specs
@@ -587,16 +589,23 @@ class Environment(object):
                 self._add_concrete_spec(s, concrete, new=False)
 
         # concretize any new user specs that we haven't concretized yet
-        for uspec in self.user_specs:
-            if uspec not in old_concretized_user_specs:
-                tty.msg('Concretizing %s' % uspec)
-                concrete = uspec.concretized()
+        with ParallelConcretizer(nproc, ignore_error=False) as pc:
+            spec_lst = [s for s in self.user_specs if s
+                        not in old_concretized_user_specs]
+
+            for uspec in pc.concrete_specs_gen(spec_lst, print_time=True):
                 self._add_concrete_spec(uspec, concrete)
 
-                # Display concretized spec to the user
-                sys.stdout.write(concrete.tree(
-                    recurse_dependencies=True, install_status=True,
-                    hashlen=7, hashes=True))
+        # for uspec in self.user_specs:
+        #     if uspec not in old_concretized_user_specs:
+        #         tty.msg('Concretizing %s' % uspec)
+        #         concrete = uspec.concretized()
+        #         self._add_concrete_spec(uspec, concrete)
+        #
+        #         # Display concretized spec to the user
+        #         sys.stdout.write(concrete.tree(
+        #             recurse_dependencies=True, install_status=True,
+        #             hashlen=7, hashes=True))
 
     def install(self, user_spec, concrete_spec=None, **install_args):
         """Install a single spec into an environment.
@@ -644,32 +653,45 @@ class Environment(object):
         self.concretized_order.append(h)
         self.specs_by_hash[h] = concrete
 
-    def install_all(self, args=None):
+    def install_all(self, workers=1, args=None):
         """Install all concretized specs in an environment."""
 
-        # Make sure log directory exists
-        log_path = self.log_path
-        fs.mkdirp(log_path)
+        exit()
+        kwargs = dict()
+        if args:
+            spack.cmd.install.update_kwargs_from_args(args, kwargs)
 
-        for concretized_hash in self.concretized_order:
-            spec = self.specs_by_hash[concretized_hash]
+        ms = MultiSpec()
+        ms.add_specs(workers, self.concretized_user_specs)
 
-            # Parse cli arguments and construct a dictionary
-            # that will be passed to Package.do_install API
-            kwargs = dict()
-            if args:
-                spack.cmd.install.update_kwargs_from_args(args, kwargs)
+        mpsi = MultiProcSpecInstaller(workers)
+        mpsi.install_multispec(ms)
 
-            with fs.working_dir(self.path):
-                spec.package.do_install(**kwargs)
+        # ignore logging for now
 
-            if not spec.external:
-                # Link the resulting log file into logs dir
-                build_log_link = os.path.join(
-                    log_path, '%s-%s.log' % (spec.name, spec.dag_hash(7)))
-                if os.path.exists(build_log_link):
-                    os.remove(build_log_link)
-                os.symlink(spec.package.build_log_path, build_log_link)
+        # # Make sure log directory exists
+        # log_path = self.log_path
+        # fs.mkdirp(log_path)
+        #
+        # for concretized_hash in self.concretized_order:
+        #     spec = self.specs_by_hash[concretized_hash]
+        #
+        #     # Parse cli arguments and construct a dictionary
+        #     # that will be passed to Package.do_install API
+        #     kwargs = dict()
+        #     if args:
+        #         spack.cmd.install.update_kwargs_from_args(args, kwargs)
+        #
+        #     with fs.working_dir(self.path):
+        #         spec.package.do_install(**kwargs)
+        #
+        #     if not spec.external:
+        #         # Link the resulting log file into logs dir
+        #         build_log_link = os.path.join(
+        #             log_path, '%s-%s.log' % (spec.name, spec.dag_hash(7)))
+        #         if os.path.exists(build_log_link):
+        #             os.remove(build_log_link)
+        #         os.symlink(spec.package.build_log_path, build_log_link)
 
     def all_specs_by_hash(self):
         """Map of hashes to spec for all specs in this environment."""

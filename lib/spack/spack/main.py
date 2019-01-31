@@ -350,6 +350,10 @@ def make_argument_parser(**kwargs):
     parser.add_argument(
         '-k', '--insecure', action='store_true',
         help="do not check ssl certificates when downloading")
+
+    parser.add_argument(
+        '-n', '--nprocs', action='store', default=1, type=int, dest='nprocs',
+        help='number of parallel processes to use')
     parser.add_argument(
         '-l', '--enable-locks', action='store_true', dest='locks',
         default=None, help="use filesystem locking (default)")
@@ -592,6 +596,7 @@ def main(argv=None):
         argv (list of str or None): command line arguments, NOT including
             the executable name. If None, parses from sys.argv.
     """
+
     # Create a parser with a simple positional argument first.  We'll
     # lazily load the subcommand(s) we need later. This allows us to
     # avoid loading all the modules from spack.cmd when we don't need
@@ -613,6 +618,36 @@ def main(argv=None):
     if args.print_shell_vars:
         print_setup_info(*args.print_shell_vars.split(','))
         return 0
+
+    # from spack.spec import Spec
+    # #import llnl.util.tty as tty
+    # import time
+    # import llnl.util.lock as lk
+    #
+    # tty.set_verbose(args.verbose)
+    # tty.set_debug(args.debug)
+    #
+    # def use_llnl_lock(path='/tmp/lockfile', start=10000, len=100):
+    #     mylk = lk.Lock(path, start, len)
+    #     mylk.acquire_write()
+    #     tty.warn('ENTERED LOCK')
+    #     time.sleep(1)
+    #     tty.warn('EXITING LOCK')
+    #     mylk.release_write()
+    # #
+    # def use_db_lock():
+    #     s = Spec('m4')
+    #     s.concretize()
+    #     #tty.warn('Locking phase...\n')
+    #     time.sleep(0.1)
+    #     with spack.store.db.prefix_write_lock(s):
+    #         tty.warn('ENTERED LOCK')
+    #         time.sleep(1)
+    #         tty.warn('EXITING LOCK')
+    #
+    # #use_db_lock()
+    # use_llnl_lock('/home/sknigh/code/github/spack/opt/spack/.spack-db/prefix_lock', 4651886554793840719, 1)
+    # exit()
 
     # Just print help and exit if run with no arguments at all
     no_args = (len(sys.argv) == 1) if argv is None else (len(argv) == 0)
