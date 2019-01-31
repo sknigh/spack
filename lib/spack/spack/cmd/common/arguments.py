@@ -113,15 +113,11 @@ _arguments['very_long'] = Args(
 
 _arguments['jobs'] = Args(
     '-j', '--jobs', action='store', type=int, dest='jobs',
-    help="explicitely set number of make jobs. default is #cpus")
+    help="explicitly set number of make jobs. default is #cpus")
 
 _arguments['tags'] = Args(
     '-t', '--tags', action='append',
     help='filter a package query by tags')
-
-_arguments['jobs'] = Args(
-    '-j', '--jobs', action='store', type=int, dest="jobs",
-    help="explicitly set number of make jobs, default is #cpus.")
 
 _arguments['install_status'] = Args(
     '-I', '--install-status', action='store_true', default=False,
