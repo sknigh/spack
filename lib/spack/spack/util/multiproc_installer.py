@@ -10,13 +10,14 @@ def install_from_queue(jobs, work_queue, installation_result_queue):
         try:
             serialized_spec = work_queue.get(block=True)
             spec = Spec.from_yaml(serialized_spec).concretized()
-            spec.package.do_install(make_jobs=jobs,
-                                    install_deps=False,
-                                    quiet=True)
-            #spec.package.do_install(make_jobs=jobs, install_deps=True)
+
+            with tty.SuppressOutput(msg=True, info=True, warn=True):
+                spec.package.do_install(make_jobs=jobs, install_deps=False)
+
             installation_result_queue.put_nowait((None, serialized_spec))
-        except:
+        except Exception as e:
             tty.error('Package build error!')
+            tty.error(e)
             installation_result_queue.put_nowait(('ERROR', serialized_spec))
 
 

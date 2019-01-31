@@ -218,7 +218,7 @@ def install(parser, args, **kwargs):
                 env.concretize()
                 env.write()
             tty.msg("Installing environment %s" % env.name)
-            env.install_all(args)
+            env.install_all(workers=args.nprocs, args=args)
             return
         else:
             tty.die("install requires a package argument or a spack.yaml file")
