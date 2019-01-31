@@ -1367,11 +1367,6 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
             raise ValueError("Can only install concrete packages: %s."
                              % self.spec.name)
 
-        # tty.msg wrapper that implements quiet parameter
-        def tty_msg(msg, *args, **_kwargs):
-            if not quiet:
-                tty.msg(msg, *args, **_kwargs)
-
         # For external packages the workflow is simplified, and basically
         # consists in module file generation and registration in the DB
         if self.spec.external:
@@ -1384,11 +1379,11 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
         layout = spack.store.layout
         with spack.store.db.prefix_read_lock(self.spec):
             if partial:
-                tty_msg(
+                tty.msg(
                     "Continuing from partial install of %s" % self.name)
             elif layout.check_installed(self.spec):
                 msg = '{0.name} is already installed in {0.prefix}'
-                tty_msg(msg.format(self))
+                tty.msg(msg.format(self))
                 rec = spack.store.db.get_record(self.spec)
                 # In case the stage directory has already been created,
                 # this ensures it's removed after we checked that the spec
@@ -1417,17 +1412,17 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                     dirty=dirty,
                     **kwargs)
 
-        tty_msg(colorize('@*{Installing} @*g{%s}' % self.name))
+        tty.msg(colorize('@*{Installing} @*g{%s}' % self.name))
 
         if kwargs.get('use_cache', True):
             if self.try_install_from_binary_cache(explicit):
-                tty_msg('Successfully installed %s from binary cache'
+                tty.msg('Successfully installed %s from binary cache'
                         % self.name)
                 print_pkg(self.prefix)
                 spack.hooks.post_install(self.spec)
                 return
 
-            tty_msg('No binary for %s found: installing from source'
+            tty.msg('No binary for %s found: installing from source'
                     % self.name)
 
         # Set run_tests flag before starting build
@@ -1454,7 +1449,7 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                 else:
                     self.do_stage()
 
-            tty_msg(
+            tty.msg(
                 'Building {0} [{1}]'.format(self.name, self.build_system_class)
             )
 
@@ -1475,7 +1470,7 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                     if install_source and os.path.isdir(source_path):
                         src_target = os.path.join(
                             self.spec.prefix, 'share', self.name, 'src')
-                        tty_msg('Copying source to {0}'.format(src_target))
+                        tty.msg('Copying source to {0}'.format(src_target))
                         install_tree(self.stage.source_path, src_target)
 
                     # Do the real install in the source directory.
@@ -1490,7 +1485,7 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                                     self.phases, self._InstallPhase_phases):
 
                                 with logger.force_echo():
-                                    tty_msg(
+                                    tty.msg(
                                         "Executing phase: '%s'" % phase_name)
 
                                 # Redirect stdout and stderr to daemon pipe
@@ -1507,7 +1502,7 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
             self._total_time = time.time() - start_time
             build_time = self._total_time - self._fetch_time
 
-            tty_msg("Successfully installed %s" % self.name,
+            tty.msg("Successfully installed %s" % self.name,
                     "Fetch: %s.  Build: %s.  Total: %s." %
                     (_hms(self._fetch_time), _hms(build_time),
                      _hms(self._total_time)))
@@ -2304,8 +2299,9 @@ def dump_packages(spec, path):
 def print_pkg(message):
     """Outputs a message with a package icon."""
     from llnl.util.tty.color import cwrite
-    cwrite('@*g{[+]} ')
-    print(message)
+    if not tty._suppress_msg:
+        cwrite('@*g{[+]} ')
+        print(message)
 
 
 def _hms(seconds):

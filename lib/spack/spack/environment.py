@@ -593,8 +593,8 @@ class Environment(object):
             spec_lst = [s for s in self.user_specs if s
                         not in old_concretized_user_specs]
 
-            for uspec in pc.concrete_specs_gen(spec_lst, print_time=True):
-                self._add_concrete_spec(uspec, concrete)
+            for uspec, cspec in pc.concrete_specs_gen(spec_lst, print_time=True):
+                self._add_concrete_spec(uspec, cspec)
 
         # for uspec in self.user_specs:
         #     if uspec not in old_concretized_user_specs:
@@ -656,13 +656,15 @@ class Environment(object):
     def install_all(self, workers=1, args=None):
         """Install all concretized specs in an environment."""
 
-        exit()
         kwargs = dict()
         if args:
             spack.cmd.install.update_kwargs_from_args(args, kwargs)
 
         ms = MultiSpec()
-        ms.add_specs(workers, self.concretized_user_specs)
+        ms.add_specs(workers=workers,
+                     specs=self.concretized_user_specs,
+                     verbose=True)
+        ms.prune_installed(verbose=True)
 
         mpsi = MultiProcSpecInstaller(workers)
         mpsi.install_multispec(ms)

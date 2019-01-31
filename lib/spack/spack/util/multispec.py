@@ -26,16 +26,16 @@ class SpecNode:
             yield dep_spec.spec
 
 
-def concretize_spec(ser_spec):
-    try:
-        spec = Spec.from_yaml(ser_spec)
-        try:
-            return spec.concretized().to_yaml(all_deps=True)
-        except Exception as e:
-            tty.warn('Could not concretize %s: %s' % (spec.name, e))
-    except:
-        tty.warn('Could not concretize spec (Bad serialization)')
-    return None
+# def concretize_spec(ser_spec):
+#     try:
+#         spec = Spec.from_yaml(ser_spec)
+#         try:
+#             return spec.concretized().to_yaml(all_deps=True)
+#         except Exception as e:
+#             tty.warn('Could not concretize %s: %s' % (spec.name, e))
+#     except:
+#         tty.warn('Could not concretize spec (Bad serialization)')
+#     return None
 
 
 class ParallelConcretizer:
@@ -43,8 +43,9 @@ class ParallelConcretizer:
     For best utilization, pass a large list of specs to concrete_specs_gen
     and iterate over the results in a loop body.
 
-    The right worker count is decided by available cores and loss of
-    spec memoization between worker processes.
+    The right worker count is decided by available cores, loss of
+    spec memoization between worker processes, and the number of specs to
+    concretize.
     """
 
     def __init__(self, workers=1, ignore_error=False):
@@ -71,7 +72,7 @@ class ParallelConcretizer:
         try:
             spec = Spec.from_yaml(ser_spec)
             try:
-                return spec.concretized().to_yaml(all_deps=True)
+                return ser_spec, spec.concretized().to_yaml(all_deps=True)
             except Exception as e:
                 tty.warn('Could not concretize %s: %s' % (spec.name, e))
         except Exception as e:
@@ -79,7 +80,12 @@ class ParallelConcretizer:
         return None
 
     def concrete_specs_gen(self, specs, print_time=False):
-        """Generator that yields an unordered list of concrete specs"""
+        """Concretizes specs across a pool of processes
+
+        Returns:
+             A generator that yields a tuple with the original spec and a
+             concretized spec. Output is not necessarily ordered.
+        """
 
         start_time = time.time()
 
@@ -96,15 +102,17 @@ class ParallelConcretizer:
 
         # Hand back any specs that are already concrete while the pool works
         for concrete_spec in conc_list:
-            yield concrete_spec
+            yield (concrete_spec, concrete_spec)
 
         # Yield specs as the pool concretizes them
-        for spec_yaml in conc_spec_gen:
-            if spec_yaml is None:
+        for spec_yaml_tuple in conc_spec_gen:
+            if spec_yaml_tuple is None:
                 if not self.ignore_error:
                     raise Exception("Parallel concretization Failed!")
             else:
-                yield Spec.from_yaml(spec_yaml)
+                orig_spec_yaml, conc_spec_yaml = spec_yaml_tuple
+                yield (Spec.from_yaml(orig_spec_yaml),
+                       Spec.from_yaml(conc_spec_yaml))
 
         if print_time:
             tot_time = time.time() - start_time
@@ -123,7 +131,7 @@ class MultiSpec:
         """Add a Spec to the DAG"""
         self.add_specs([spec])
 
-    def prune_installed(self):
+    def prune_installed(self, verbose=False):
         """Removes specs that are already installed"""
         # expand a list instead of iterating the tree directly
         # so items can be removed by the inner loop
@@ -135,8 +143,9 @@ class MultiSpec:
                 self.install_successful(node.spec)
 
         spec_count = len(self.tree.items())
-        tty.msg('%d specs already installed, %d not yet installed' % (
-            initial_spec_count - spec_count, spec_count))
+        if verbose:
+            tty.msg('%d specs already installed, %d not yet installed' % (
+                initial_spec_count - spec_count, spec_count))
 
     def install_successful(self, spec):
         """Removes a spec from the DAG and returns any new specs that no
@@ -187,12 +196,12 @@ class MultiSpec:
     def count(self):
         return len(self.tree)
 
-    # TODO: Track specs to mark as explicit
+    # TODO: Track specs to mark as explicit?
     def add_specs(self, specs, workers=1, verbose=False):
         """Add a list of Specs to the DAG"""
 
         with ParallelConcretizer(workers, ignore_error=True) as pc:
-            for spec in pc.concrete_specs_gen(specs, print_time=verbose):
+            for _, spec in pc.concrete_specs_gen(specs, print_time=verbose):
                 # tuple list of [(parent, spec)]
                 unresolved_specs = [(None, spec)]
 
