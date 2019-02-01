@@ -67,13 +67,24 @@ def suppress_error(flag):
     _suppress_error = flag
 
 
+def msg_suppressed():
+    return _suppress_msg
+
+
+def info_suppressed():
+    return _suppress_info
+
+
+def warn_suppressed():
+    return _suppress_warn
+
+
+def error_suppressed():
+    return _suppress_error
+
+
 class SuppressOutput:
     """Class for disabling output in a scope using 'with' keyword"""
-
-    # global _suppress_msg
-    # global _suppress_info
-    # global _suppress_warn
-    # global _suppress_error
 
     def __init__(self, msg=False, info=False, warn=False, error=False):
 
