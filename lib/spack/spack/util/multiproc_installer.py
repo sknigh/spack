@@ -1,5 +1,5 @@
 import copy
-from multiprocessing import Pool, Queue, Manager, cpu_count
+from multiprocessing import Manager, cpu_count
 from spack.spec import Spec
 import llnl.util.tty as tty
 from spack.util.web import NonDaemonPool
@@ -104,14 +104,13 @@ class MultiProcSpecInstaller(SpecInstaller):
                     else:
                         removed_specs = multi_spec_copy.install_failed(spec)
                         outstanding_installs.pop(spec.full_hash())
+                        removed_specs = '\n\t'.join(
+                                        s.name for s in sorted(removed_specs))
                         tty.error('%s Installation of "%s" failed. Skipping %d'
-                                  ' dependent packages: \n\t%s' % (
-                                    get_prompt(),
-                                    spec.name,
-                                    len(removed_specs),
-                                    '\n\t'.join(
-                                        s.name for s in sorted(removed_specs)))
-                                  )
+                                  ' dependent packages: \n\t%s' %
+                                  (get_prompt(), spec.name, len(removed_specs),
+                                   removed_specs
+                                   ))
                         # TODO: do something with result 'res' message
         except Exception as e:
             tty.error("Installation pool error, %s" % str(e))

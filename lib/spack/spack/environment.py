@@ -5,7 +5,6 @@
 
 import os
 import re
-import sys
 import shutil
 
 import ruamel.yaml
@@ -593,19 +592,8 @@ class Environment(object):
             spec_lst = [s for s in self.user_specs if s
                         not in old_concretized_user_specs]
 
-            for uspec, cspec in pc.concrete_specs_gen(spec_lst, print_time=True):
+            for uspec, cspec in pc.concrete_specs_gen(spec_lst, True):
                 self._add_concrete_spec(uspec, cspec)
-
-        # for uspec in self.user_specs:
-        #     if uspec not in old_concretized_user_specs:
-        #         tty.msg('Concretizing %s' % uspec)
-        #         concrete = uspec.concretized()
-        #         self._add_concrete_spec(uspec, concrete)
-        #
-        #         # Display concretized spec to the user
-        #         sys.stdout.write(concrete.tree(
-        #             recurse_dependencies=True, install_status=True,
-        #             hashlen=7, hashes=True))
 
     def install(self, user_spec, concrete_spec=None, **install_args):
         """Install a single spec into an environment.

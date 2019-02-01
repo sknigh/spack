@@ -652,7 +652,9 @@ def main(argv=None):
     #         tty.warn('EXITING LOCK')
     #
     # #use_db_lock()
-    # use_llnl_lock('/home/sknigh/code/github/spack/opt/spack/.spack-db/prefix_lock', 4651886554793840719, 1)
+    # use_llnl_lock(
+    # '/home/sknigh/code/github/spack/opt/spack/.spack-db/prefix_lock',
+    # 4651886554793840719, 1)
     # exit()
 
     # Just print help and exit if run with no arguments at all

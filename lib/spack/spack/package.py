@@ -1564,8 +1564,8 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
         except StopIteration as e:
             # A StopIteration exception means that do_install
             # was asked to stop early from clients
-            tty_msg(e.message)
-            tty_msg(
+            tty.msg(e.message)
+            tty.msg(
                 'Package stage directory : {0}'.format(self.stage.source_path)
             )
         finally:
