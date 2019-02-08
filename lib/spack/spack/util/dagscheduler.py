@@ -6,15 +6,22 @@ from spack.spec import Spec
 import llnl.util.tty as tty
 
 
+# TODO: Returns logical processors, which will be 1x, 2x, or 4x the
+#  number of available hardware cores
+def get_cpu_count():
+    return cpu_count()/2
+
+
 class SpecNode:
-    """A spec node contains a Spec, its hash, immediate dependencies and
-    dependents"""
+    """Represents the position of one Spec in the DAG"""
 
     def __init__(self, spec):
         self.spec = spec if spec.concrete else spec.concretized()
         self.dependencies = list(self._immediate_deps_gen(spec))
         self.hash = spec.full_hash()
         self.dependents = set()
+        self.weight = None
+        self.jobs = None
 
     def __repr__(self):
         return self.hash
@@ -38,7 +45,7 @@ class ParallelConcretizer:
 
     def __init__(self, workers=1, ignore_error=False):
         # TODO: This check assumes hyperthreading is enabled
-        adjusted_workers = int(max(1, min(workers, int(cpu_count() / 2))))
+        adjusted_workers = int(max(1, min(workers, int(get_cpu_count() / 2))))
 
         self.ignore_error = ignore_error
         self.workers = adjusted_workers
@@ -109,11 +116,14 @@ class ParallelConcretizer:
                 len(specs), round(tot_time, 2), round(spec_per_second, 2)))
 
 
-class DagScheduler:
-    """Curates DAG with multiple specs"""
+class DagSchedulerBase:
+    """Base class for a DAG Scheduler
+    Defines methods for manipulating the DAG
+    Generating a weighting and/or job priority is left to derived classes"""
 
     def __init__(self):
         self.tree = dict()
+        self._build_schedule_called = False
 
     def add_spec(self, spec):
         """Add a Spec to the DAG"""
@@ -135,7 +145,7 @@ class DagScheduler:
             tty.msg('%d specs already installed, %d not yet installed' % (
                 initial_spec_count - spec_count, spec_count))
 
-    def install_successful(self, spec):
+    def _install_successful(self, spec):
         """Removes a spec from the DAG and returns any new specs that no
         longer have dependencies."""
         new_no_deps = set()
@@ -153,6 +163,9 @@ class DagScheduler:
 
         self.tree.pop(spec_node.hash)
         return new_no_deps
+
+    def install_successful(self, spec):
+        raise NotImplementedError()
 
     def install_failed(self, spec):
         """Removes a spec and its dependents. Returns any dependent specs that
@@ -208,3 +221,46 @@ class DagScheduler:
                     # Add a dependent when a parent is defined
                     if parent is not None:
                         self.tree[cur_hash].dependents.add(parent.hash)
+
+    def _check_build_schedule_called(self):
+        """Ensure build schedule is called before doing work"""
+        if not self._build_schedule_called:
+            raise Exception('DagScheduler Error: build_schedule() not called')
+
+    def build_schedule(self, print_time=False):
+        """Allow static schedulers to weight the DAG"""
+        raise NotImplementedError()
+
+    def pop_spec(self):
+        """Returns a ready spec and the number of build jobs"""
+        raise NotImplementedError()
+
+
+class SimpleDagScheduler(DagSchedulerBase):
+    """Implements a Dag Scheduler
+    - No dependency ordering
+    - Supports single node builds
+    - Make jobs are set to cores/workers"""
+
+    def __init__(self, workers=1):
+        super().__init__()
+        # Allows for slight over-provisioning
+        self.build_jobs = int(round(get_cpu_count()/workers))
+        self._ready_to_install = set()
+
+    def build_schedule(self, print_time=False):
+        self._build_schedule_called = True
+        self.prune_installed()
+        self._ready_to_install = set(self.ready_specs())
+
+    def pop_spec(self):
+        self._check_build_schedule_called()
+
+        if len(self.ready_to_install) > 0:
+            return self.build_jobs, self._ready_to_install.pop()
+
+        return None
+
+    def install_successful(self, spec):
+        for spec in self._install_successful(self, spec):
+            self._ready_to_install.add(spec)

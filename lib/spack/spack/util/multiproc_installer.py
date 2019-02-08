@@ -1,4 +1,5 @@
 import copy
+import time
 from multiprocessing import Manager, cpu_count
 from spack.spec import Spec
 import llnl.util.tty as tty
@@ -24,7 +25,7 @@ def install_from_queue(jobs, work_queue, installation_result_queue):
 class SpecInstaller:
     """Interface for installing specs"""
 
-    def install_multispec(self, multispec):
+    def install_dag(self, dag_scheduler):
         raise Exception('Interface function not implemented')
 
     @staticmethod
@@ -48,8 +49,10 @@ class MultiProcSpecInstaller(SpecInstaller):
         self.max_jobs = max_jobs_bounded
         self.parallelism = int(self.cpu_count // self.max_jobs)
 
-    def install_dag(self, multispec):
+    def install_dag(self, dag_scheduler):
         """Installs a list of specs"""
+
+        start_time = time.now()
 
         # Initialize structures relating to the process pool
         outstanding_installs = {}
@@ -67,8 +70,8 @@ class MultiProcSpecInstaller(SpecInstaller):
                                       installation_result_queue))
 
                 # Initialize spec structures
-                multi_spec_copy = copy.deepcopy(multispec)
-                ready_specs = multi_spec_copy.ready_specs()
+                    dag_scheduler_copy = copy.deepcopy(dag_scheduler)
+                ready_specs = dag_scheduler_copy.ready_specs()
 
                 def get_prompt():
                     res_qsize = installation_result_queue.qsize()
@@ -78,7 +81,7 @@ class MultiProcSpecInstaller(SpecInstaller):
                     return self._progress_prompt_str(
                         outstanding - work_qsize - res_qsize,
                         ready + work_qsize,
-                        multi_spec_copy.count())
+                        dag_scheduler_copy.count())
 
                 tty.msg(self._progress_prompt_str(
                     'Installing', 'Ready', 'Unscheduled'))
@@ -98,11 +101,12 @@ class MultiProcSpecInstaller(SpecInstaller):
                     spec = Spec.from_yaml(serialized_spec)
 
                     if res is None:
-                        ready_specs |= multi_spec_copy.install_successful(spec)
+                        ready_specs |= dag_scheduler_copy.install_successful(
+                            spec)
                         outstanding_installs.pop(spec.full_hash())
                         tty.msg('%s Installed %s' % (get_prompt(), spec.name))
                     else:
-                        removed_specs = multi_spec_copy.install_failed(spec)
+                        removed_specs = dag_scheduler_copy.install_failed(spec)
                         outstanding_installs.pop(spec.full_hash())
                         removed_specs = '\n\t'.join(
                                         s.name for s in sorted(removed_specs))
@@ -114,6 +118,7 @@ class MultiProcSpecInstaller(SpecInstaller):
                         # TODO: do something with result 'res' message
         except Exception as e:
             tty.error("Installation pool error, %s" % str(e))
-
-        tty.msg('Done')
+        finally:
+            tty.msg('Installation finished (%s)' % time.strftime(
+                '%H:%M:%S', time.gmtime(time.time() - start_time)))
 
