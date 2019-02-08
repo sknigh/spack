@@ -26,18 +26,6 @@ class SpecNode:
             yield dep_spec.spec
 
 
-# def concretize_spec(ser_spec):
-#     try:
-#         spec = Spec.from_yaml(ser_spec)
-#         try:
-#             return spec.concretized().to_yaml(all_deps=True)
-#         except Exception as e:
-#             tty.warn('Could not concretize %s: %s' % (spec.name, e))
-#     except:
-#         tty.warn('Could not concretize spec (Bad serialization)')
-#     return None
-
-
 class ParallelConcretizer:
     """Concretizes Specs using parallel workers
     For best utilization, pass a large list of specs to concrete_specs_gen
@@ -121,7 +109,7 @@ class ParallelConcretizer:
                 len(specs), round(tot_time, 2), round(spec_per_second, 2)))
 
 
-class MultiSpec:
+class DagScheduler:
     """Curates DAG with multiple specs"""
 
     def __init__(self):

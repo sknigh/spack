@@ -19,7 +19,7 @@ import spack.spec
 import spack.util.spack_json as sjson
 import spack.config
 from spack.spec import Spec
-from spack.util.multispec import ParallelConcretizer, MultiSpec
+from spack.util.dagscheduler import ParallelConcretizer, DagScheduler
 from spack.util.multiproc_installer import MultiProcSpecInstaller
 
 #: environment variable used to indicate the active environment
@@ -648,14 +648,14 @@ class Environment(object):
         if args:
             spack.cmd.install.update_kwargs_from_args(args, kwargs)
 
-        ms = MultiSpec()
+        ms = DagScheduler()
         ms.add_specs(workers=workers,
                      specs=self.concretized_user_specs,
                      verbose=True)
         ms.prune_installed(verbose=True)
 
         mpsi = MultiProcSpecInstaller(workers)
-        mpsi.install_multispec(ms)
+        mpsi.install_dag(ms)
 
         # ignore logging for now
 
