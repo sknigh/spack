@@ -1,6 +1,7 @@
 import numpy as np
 import copy
 import time
+import os
 from multiprocessing import Manager, cpu_count
 from spack.spec import Spec
 import llnl.util.tty as tty
@@ -47,12 +48,16 @@ def install_from_queue(jobs, work_queue, installation_result_queue):
             serialized_spec = work_queue.get(block=True)
             spec = Spec.from_yaml(serialized_spec).concretized()
 
-            with tty.SuppressOutput(msg_enabled=False,
+            tty.msg(
+                '(%s) Parallel job installing %s' % (os.getpid(), spec.name))
+            with tty.SuppressOutput(msg_enabled=True,
                                     warn_enabled=False,
                                     error_enabled=False):
                     spec.package.do_install(make_jobs=jobs, install_deps=False)
 
             installation_result_queue.put_nowait((None, serialized_spec))
+            tty.msg(
+                '(%s) Parallel job installed %s' % (os.getpid(), spec.name))
         except Exception as e:
             tty.error('Package build error!')
             tty.error(e)
@@ -147,7 +152,7 @@ class MultiProcSpecInstaller(SpecInstaller):
                             print(spec, 'has no new dependents')
 
                         outstanding_installs.pop(spec.full_hash())
-                        tty.msg('%s Installed %s' % (get_prompt(), spec.name))
+                        #tty.msg('%s Installed %s' % (get_prompt(), spec.name))
                     else:
                         removed_specs = dag_scheduler_copy.install_failed(spec)
                         outstanding_installs.pop(spec.full_hash())
