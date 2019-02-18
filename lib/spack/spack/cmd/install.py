@@ -185,19 +185,14 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
             env.install(abstract_spec, spec, **kwargs)
             env.write()
         else:
-            print(abstract_spec)
-            print(spec)
-            # TODO: get the correct number of workers
-            workers = 1
-
             ms = SimpleDagScheduler()
-            ms.add_specs(workers=workers,
+            ms.add_specs(workers=cli_args.nprocs,
                          specs=[spec.concretized()],
                          verbose=True)
             ms.prune_installed(verbose=True)
             ms.build_schedule()
 
-            mpsi = MultiProcSpecInstaller(workers)
+            mpsi = MultiProcSpecInstaller(cli_args.nprocs)
             mpsi.install_dag(ms)
             #spec.package.do_install(**kwargs)
 

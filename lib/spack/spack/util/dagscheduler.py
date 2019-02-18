@@ -253,13 +253,19 @@ class SimpleDagScheduler(DagSchedulerBase):
         self.prune_installed()
         self._ready_to_install = set(self.ready_specs())
 
-    def pop_spec(self):
+    def pop_read_specs(self):
         self._check_build_schedule_called()
 
-        if len(self.ready_to_install) > 0:
+        if len(self._ready_to_install) > 0:
             return self.build_jobs, self._ready_to_install.pop()
+        else:
+            return None
 
-        return None
+    def pop_all_ready_specs(self):
+        for spec in self._ready_to_install:
+            yield self.build_jobs, spec
+
+        self._ready_to_install.clear()
 
     def install_successful(self, spec):
         for spec in self._install_successful(spec):

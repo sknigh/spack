@@ -24,7 +24,7 @@ class InstallTimeEstimatorBase:
         self._times.extend(times)
 
 
-class LogarithmicEstimator(InstallTimeEstimatorBase):
+class LogTimeEstimator(InstallTimeEstimatorBase):
     """Use a Logarithmic third degree polynomial curve to estimate build time"""
     def __init__(self, make_jobs=[], times=[]):
         super(InstallTimeEstimatorBase, self).__init__(make_jobs, times)
@@ -63,7 +63,7 @@ class SpecInstaller:
     """Interface for installing specs"""
 
     def install_dag(self, dag_scheduler):
-        raise Exception('Interface function not implemented')
+        raise NotImplementedError()
 
     @staticmethod
     def _progress_prompt_str(installing, ready, remaining):
@@ -89,7 +89,7 @@ class MultiProcSpecInstaller(SpecInstaller):
     def install_dag(self, dag_scheduler):
         """Installs a list of specs"""
 
-        start_time = time.now()
+        start_time = time.time()
 
         # Initialize structures relating to the process pool
         outstanding_installs = {}
@@ -108,7 +108,7 @@ class MultiProcSpecInstaller(SpecInstaller):
 
                 # Initialize spec structures
                     dag_scheduler_copy = copy.deepcopy(dag_scheduler)
-                ready_specs = dag_scheduler_copy.ready_specs()
+                ready_specs = set(dag_scheduler_copy.pop_all_ready_specs())
 
                 def get_prompt():
                     res_qsize = installation_result_queue.qsize()
@@ -124,7 +124,7 @@ class MultiProcSpecInstaller(SpecInstaller):
                     'Installing', 'Ready', 'Unscheduled'))
 
                 while len(ready_specs) > 0 or len(outstanding_installs) > 0:
-                    for spec in ready_specs:
+                    for jobs, spec in ready_specs:
                         # Note: to_json does not support all_deps
                         work_queue.put_nowait(spec.to_yaml(all_deps=True))
                         outstanding_installs[spec.full_hash()] = spec
@@ -138,8 +138,14 @@ class MultiProcSpecInstaller(SpecInstaller):
                     spec = Spec.from_yaml(serialized_spec)
 
                     if res is None:
-                        ready_specs |= dag_scheduler_copy.install_successful(
-                            spec)
+                        dag_scheduler_copy.install_successful(spec)
+
+                        # Greedily get all ready specs
+                        for j_s in dag_scheduler_copy.pop_all_ready_specs():
+                            ready_specs.add(j_s)
+                        else:
+                            print(spec, 'has no new dependents')
+
                         outstanding_installs.pop(spec.full_hash())
                         tty.msg('%s Installed %s' % (get_prompt(), spec.name))
                     else:
