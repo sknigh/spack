@@ -262,5 +262,5 @@ class SimpleDagScheduler(DagSchedulerBase):
         return None
 
     def install_successful(self, spec):
-        for spec in self._install_successful(self, spec):
+        for spec in self._install_successful(spec):
             self._ready_to_install.add(spec)

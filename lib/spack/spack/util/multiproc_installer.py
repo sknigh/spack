@@ -1,3 +1,4 @@
+import numpy as np
 import copy
 import time
 from multiprocessing import Manager, cpu_count
@@ -6,14 +7,50 @@ import llnl.util.tty as tty
 from spack.util.web import NonDaemonPool
 
 
+class InstallTimeEstimatorBase:
+    """Base class for fitting a curve to observed installation times"""
+    def __init__(self, make_jobs=[], times=[]):
+        self._jobs = make_jobs
+        self._times = times
+        self._computed = False
+
+    def estimate(self, jobs):
+        """Estimate installation time for a given number of jobs"""
+        raise NotImplementedError()
+
+    def add_measurement(self, make_jobs, times):
+        """Add a new measurement"""
+        self._jobs.extend(make_jobs)
+        self._times.extend(times)
+
+
+class LogarithmicEstimator(InstallTimeEstimatorBase):
+    """Use a Logarithmic third degree polynomial curve to estimate build time"""
+    def __init__(self, make_jobs=[], times=[]):
+        super(InstallTimeEstimatorBase, self).__init__(make_jobs, times)
+        self._estimate = None
+
+    def _compute_estimate(self):
+        self._estimate = np.poly1d(
+            np.polyfit(np.log(self._jobs), self._times, deg=3))
+
+    def estimate(self, jobs):
+        if not self._computed:
+            self._compute_estimate()
+
+        return self._estimate(jobs)
+
+
 def install_from_queue(jobs, work_queue, installation_result_queue):
     while True:
         try:
             serialized_spec = work_queue.get(block=True)
             spec = Spec.from_yaml(serialized_spec).concretized()
 
-            with tty.SuppressOutput(msg=True, info=True, warn=True):
-                spec.package.do_install(make_jobs=jobs, install_deps=False)
+            with tty.SuppressOutput(msg_enabled=False,
+                                    warn_enabled=False,
+                                    error_enabled=False):
+                    spec.package.do_install(make_jobs=jobs, install_deps=False)
 
             installation_result_queue.put_nowait((None, serialized_spec))
         except Exception as e:

@@ -18,6 +18,8 @@ import spack.environment as ev
 import spack.fetch_strategy
 import spack.paths
 import spack.report
+from spack.util.dagscheduler import ParallelConcretizer, SimpleDagScheduler
+from spack.util.multiproc_installer import MultiProcSpecInstaller
 from spack.error import SpackError
 
 
@@ -183,7 +185,21 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
             env.install(abstract_spec, spec, **kwargs)
             env.write()
         else:
-            spec.package.do_install(**kwargs)
+            print(abstract_spec)
+            print(spec)
+            # TODO: get the correct number of workers
+            workers = 1
+
+            ms = SimpleDagScheduler()
+            ms.add_specs(workers=workers,
+                         specs=[spec.concretized()],
+                         verbose=True)
+            ms.prune_installed(verbose=True)
+            ms.build_schedule()
+
+            mpsi = MultiProcSpecInstaller(workers)
+            mpsi.install_dag(ms)
+            #spec.package.do_install(**kwargs)
 
     try:
         if cli_args.things_to_install == 'dependencies':

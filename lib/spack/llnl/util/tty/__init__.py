@@ -80,26 +80,9 @@ def error_enabled():
     return _error_enabled
 
 
-def msg_suppressed():
-    return _suppress_msg
-
-
-def info_suppressed():
-    return _suppress_info
-
-
-def warn_suppressed():
-    return _suppress_warn
-
-
-def error_suppressed():
-    return _suppress_error
-
-
 class SuppressOutput:
     """Class for disabling output in a scope using 'with' keyword"""
 
-<<<<<<< HEAD
     def __init__(self,
                  msg_enabled=True,
                  warn_enabled=True,
@@ -108,9 +91,6 @@ class SuppressOutput:
         self._msg_enabled_initial = _msg_enabled
         self._warn_enabled_initial = _warn_enabled
         self._error_enabled_initial = _error_enabled
-=======
-    def __init__(self, msg=False, info=False, warn=False, error=False):
->>>>>>> fixed flake8 issues, fixed issues with curl printing a progress bar when output should be suppressed
 
         self._msg_enabled = msg_enabled
         self._warn_enabled = warn_enabled
