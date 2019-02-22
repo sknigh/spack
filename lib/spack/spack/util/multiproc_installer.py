@@ -1,4 +1,3 @@
-import numpy as np
 import copy
 import time
 import os
@@ -6,40 +5,6 @@ from multiprocessing import Manager, cpu_count
 from spack.spec import Spec
 import llnl.util.tty as tty
 from spack.util.web import NonDaemonPool
-
-
-class InstallTimeEstimatorBase:
-    """Base class for fitting a curve to observed installation times"""
-    def __init__(self, make_jobs=[], times=[]):
-        self._jobs = make_jobs
-        self._times = times
-        self._computed = False
-
-    def estimate(self, jobs):
-        """Estimate installation time for a given number of jobs"""
-        raise NotImplementedError()
-
-    def add_measurement(self, make_jobs, times):
-        """Add a new measurement"""
-        self._jobs.extend(make_jobs)
-        self._times.extend(times)
-
-
-class LogTimeEstimator(InstallTimeEstimatorBase):
-    """Use a Logarithmic third degree polynomial curve to estimate build time"""
-    def __init__(self, make_jobs=[], times=[]):
-        super(InstallTimeEstimatorBase, self).__init__(make_jobs, times)
-        self._estimate = None
-
-    def _compute_estimate(self):
-        self._estimate = np.poly1d(
-            np.polyfit(np.log(self._jobs), self._times, deg=3))
-
-    def estimate(self, jobs):
-        if not self._computed:
-            self._compute_estimate()
-
-        return self._estimate(jobs)
 
 
 def install_from_queue(jobs, work_queue, installation_result_queue):
@@ -148,20 +113,20 @@ class MultiProcSpecInstaller(SpecInstaller):
                         # Greedily get all ready specs
                         for j_s in dag_scheduler_copy.pop_all_ready_specs():
                             ready_specs.add(j_s)
-                        else:
-                            print(spec, 'has no new dependents')
+                        #else:
+                        #    print(spec, 'has no new dependents')
 
                         outstanding_installs.pop(spec.full_hash())
                         #tty.msg('%s Installed %s' % (get_prompt(), spec.name))
                     else:
                         removed_specs = dag_scheduler_copy.install_failed(spec)
                         outstanding_installs.pop(spec.full_hash())
-                        removed_specs = '\n\t'.join(
+                        rm_specs_str = '\n\t'.join(
                                         s.name for s in sorted(removed_specs))
                         tty.error('%s Installation of "%s" failed. Skipping %d'
                                   ' dependent packages: \n\t%s' %
                                   (get_prompt(), spec.name, len(removed_specs),
-                                   removed_specs
+                                   rm_specs_str
                                    ))
                         # TODO: do something with result 'res' message
         except Exception as e:

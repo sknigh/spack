@@ -1,15 +1,20 @@
-import copy
+from copy import copy, deepcopy
 import time
 from multiprocessing import Pool, cpu_count
 import spack
 from spack.spec import Spec
 import llnl.util.tty as tty
+from llnl.util.lang import memoized
+from spack.util.install_time_estimator import AsymptoticTimeEstimator
 
+# Open questions
+# If a package is not profiled. What should the default behavior be? Max jobs?
 
 # TODO: Returns logical processors, which will be 1x, 2x, or 4x the
 #  number of available hardware cores
+@memoized
 def get_cpu_count():
-    return cpu_count()/2
+    return int(cpu_count()/2)
 
 
 class SpecNode:
@@ -20,8 +25,9 @@ class SpecNode:
         self.dependencies = list(self._immediate_deps_gen(spec))
         self.hash = spec.full_hash()
         self.dependents = set()
-        self.weight = None
+        self.weight_curve = None
         self.jobs = None
+        self.optimal_jobs = 1
 
     def __repr__(self):
         return self.hash
@@ -52,8 +58,8 @@ class ParallelConcretizer:
         self.pool = Pool(adjusted_workers)
 
         if adjusted_workers != workers:
-            tty.warn('ParallelConcretizer adjusted worker count from %s to %s',
-                     workers, adjusted_workers)
+            tty.warn('Parallel concretizer adjusted worker '
+                     'count from %s to %s' % (workers, adjusted_workers))
 
     def __enter__(self):
         return self
@@ -173,7 +179,7 @@ class DagSchedulerBase:
         unreachable_specs = set()
 
         spec_node = self.tree[spec.full_hash()]
-        untraversed = copy.copy(spec_node.dependents)
+        untraversed = copy(spec_node.dependents)
 
         while len(untraversed) > 0:
             untraversed_hash = untraversed.pop()
@@ -270,3 +276,204 @@ class SimpleDagScheduler(DagSchedulerBase):
     def install_successful(self, spec):
         for spec in self._install_successful(spec):
             self._ready_to_install.add(spec)
+
+
+class BarbosaDagScheduler(DagSchedulerBase):
+    """DAG scheduler that uses profiled build times to statically measure and
+    minimize the makespan (the slowest build path)
+    """
+
+    # Some builds do not scale, require a minimum speedup before allowing
+    # a build to use multiple cores
+    FLAT_SCALING_CUTOFF = 1.15
+
+    def __init__(self, pkg_build_times, workers=1, num_cores=get_cpu_count()):
+        super.__init__()
+        self.build_jobs = int(round(get_cpu_count() / workers))
+        self._ready_to_install = set()
+        self._pkg_build_times = pkg_build_times
+        self._cores = num_cores
+        self._mem_t_level = {}
+        self._mem_b_level = {}
+
+    def _init_estimators(self):
+        """Makes an approximating curve and initial job counts for each spec
+        node"""
+
+        # First, create approximating curves for each profiled package
+        unprofiled_nodes = set()
+        for node in self.tree:
+            name = node.spec.name
+
+            # Remember the nodes that are not profiled
+            if name not in self._pkg_build_times:
+                unprofiled_nodes.add(node)
+            else:
+                e = AsymptoticTimeEstimator(
+                    self._pkg_build_times[name]['make_jobs'],
+                    self._pkg_build_times[name]['time'])
+                node.weight_curve = e
+
+        # When there are some profiled and some unprofiled nodes, create a mean
+        # performance curve and assign it to the unprofiled
+        if 0 < len(unprofiled_nodes) < len(self.tree):
+
+            def avg(nums):
+                return float(sum(nums) / max(len(nums), 1))
+
+            job_range = list(range(1, self._cores + 1))
+
+            time_set = []
+            for node in self.tree:
+                if node not in unprofiled_nodes:
+                    time_set.append([node.spec.weight_curve.estimate(j) for
+                                     j in job_range])
+
+            # generate a list of mean profiled times
+            mean_times = list(map(avg, (zip(*time_set))))
+            mean_curve = AsymptoticTimeEstimator(job_range, mean_times)
+
+            for node in unprofiled_nodes:
+                node.weight_curve = mean_curve
+
+            # Select number of jobs that maximize performance
+            for node in self.tree:
+                job_time_tup = ((j, e.estimate(j)) for j in
+                                range(1, self._cores + 1))
+                one_job_speed = job_time_tup[0][1]
+                fast_j_count, fast_j_speed = max(job_time_tup,
+                                                 key=lambda tup: tup[1])
+
+                # When the build doesn't scale, do not allow it to use more
+                # than a core
+                if fast_j_speed / one_job_speed > self.FLAT_SCALING_CUTOFF:
+                    node.optimal_jobs = fast_j_count
+                    node.jobs = fast_j_count
+                else:
+                    node.optimal_jobs = 1
+                    node.jobs = 1
+
+        elif len(unprofiled_nodes) == len(self.tree):
+            raise Exception('No profiling data. Not currently supported')
+
+    def _ready_nodes(self):
+        """Returns a list of nodes that have no dependencies and are ready to
+        install"""
+        return {node.spec for _, node in self.tree.items()
+                if not len(node.dependencies)}
+
+    def _synthetic_ready_nodes(self, completed_set):
+        """Generates a set of nodes that would be ready if the nodes in the
+        completed set were installed. Allows for a non-destructive DAG
+        traversal"""
+        c_set = set(completed_set)
+        ready = []
+
+        # TODO: do not iterate over the entire tree
+        for node in [n for n in self.tree if n not in c_set]:
+            if not (dep in c_set for dep in node.dependencies):
+                ready.append(node)
+
+        return ready
+
+    def _tlevel(self, node):
+        """Calculates node's top-level. top-level is defined as the longest
+        path to the top of the DAG from the given node, excluding the node."""
+
+        # # Use memoization when possible
+        # if node.hash in self._mem_t_level:
+        #     return self._mem_t_level[node.hash]
+        # else:
+        dep_tlevels = [0]
+        for d in node.dependents:
+            dep_tlevels.append(self._tlevel(d) + d.weight_curve(d.jobs))
+
+        tlevel = max(dep_tlevels)
+        self._mem_t_level[node.hash] = tlevel
+        return tlevel
+
+    def _blevel(self, node):
+        """Calculates node's bottom-level. Bottom-level is defined as the
+        path to the most distant leaf, including the node"""
+
+        # # Use memoization
+        # if node.hash in self._mem_b_level:
+        #     blevel = self._mem_b_level[node.hash]
+        # else:
+        blevel = max([self._blevel(n) for n in node.dependencies] + [0])
+        self._mem_t_level[node.hash] = blevel + node.weight_curve(node.jobs)
+
+        return blevel
+
+    def build_schedule(self, print_time=False):
+        self._build_schedule_called = True
+        self.prune_installed()
+
+        self._mem_t_level = {}
+        self._mem_b_level = {}
+        self._init_estimators()
+
+        scheduled_nodes = set()
+        schedule_list = []
+        ready = self._synthetic_ready_nodes(scheduled_nodes)
+
+        while len(ready) > 0:
+            # When there are more ready tasks than cores, sort the tasks by
+            # t-level and select the heaviest tasks up to the core limit
+            t_levels = {r: self._tlevel(r) for r in ready}
+            ordered = sorted(t_levels.items(), key=lambda item: item[1],
+                             reverse=True)
+            ready = [v for k, v in ordered[:min(len(ready), get_cpu_count())]]
+
+            def get_optimal_cpus():
+                return sum([r.jobs for r in ready])
+
+            # Compute the optimal number of CPUs for the tasks
+            optimal_cpus = get_optimal_cpus()
+
+            # Re-weight make-jobs while optimal CPUs exceed available
+            # Do not allow jobs to decrease below 1
+            while optimal_cpus > get_cpu_count():
+                for t in ready:
+                    t.jobs = min(1,
+                                 int((get_cpu_count() / optimal_cpus) * t.jobs))
+                optimal_cpus = get_optimal_cpus()
+
+            # Compute b-level
+            b_levels = {r: self._blevel(r) for r in ready}
+
+            prev_max = set()
+            while True:
+
+                # Get nodes with min and max b-levels
+                max_bl = max(b_levels.items(), key=lambda bv: bv[1])[0]
+                min_bl = max(b_levels.items(), key=lambda bv: bv[1])[0]
+
+                if min_bl in prev_max:
+                    break
+                else:
+                    prev_max.add(max_bl)
+
+                # Take a processor away from the faster job and give it to the
+                # slower one
+                min_bl.jobs -= 1
+                max_bl.jobs += 1
+
+                # Drop builds that have no jobs (i.e. it would be more
+                # cost-effective to start them later)
+                if min_bl.jobs == 0:
+                    ready.remove(min_bl)
+                    b_levels.pop(min_bl)
+                else:
+                    b_levels[min_bl] = self._blevel(min_bl)
+
+                # Can't continue re-weighting if there < 2 jobs
+                if len(b_levels) < 2:
+                    break
+
+            for n in ready:
+                schedule_list.append(n)
+                scheduled_nodes.add(n)
+
+            # compute the set of ready tasks
+            self._synthetic_ready_nodes(scheduled_nodes)
