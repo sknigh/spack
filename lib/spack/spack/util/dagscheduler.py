@@ -25,9 +25,6 @@ class SpecNode:
         self.dependencies = list(self._immediate_deps_gen(spec))
         self.hash = spec.full_hash()
         self.dependents = set()
-        self.weight_curve = None
-        self.jobs = None
-        self.optimal_jobs = 1
 
     def __repr__(self):
         return self.hash
@@ -50,8 +47,7 @@ class ParallelConcretizer:
     """
 
     def __init__(self, workers=1, ignore_error=False):
-        # TODO: This check assumes hyperthreading is enabled
-        adjusted_workers = int(max(1, min(workers, int(get_cpu_count() / 2))))
+        adjusted_workers = int(max(1, min(workers, int(get_cpu_count()))))
 
         self.ignore_error = ignore_error
         self.workers = adjusted_workers
@@ -124,8 +120,8 @@ class ParallelConcretizer:
 
 class DagSchedulerBase:
     """Base class for a DAG Scheduler
-    Defines methods for manipulating the DAG
-    Generating a weighting and/or job priority is left to derived classes"""
+    Defines methods for manipulating a spec DAG.
+    Generating a schedule is left to derived classes"""
 
     def __init__(self):
         self.tree = dict()
@@ -234,7 +230,7 @@ class DagSchedulerBase:
             raise Exception('DagScheduler Error: build_schedule() not called')
 
     def build_schedule(self, print_time=False):
-        """Allow static schedulers to weight the DAG"""
+        """Allow static schedulers to construct a schedule"""
         raise NotImplementedError()
 
     def pop_spec(self):
@@ -259,13 +255,13 @@ class SimpleDagScheduler(DagSchedulerBase):
         self.prune_installed()
         self._ready_to_install = set(self.ready_specs())
 
-    def pop_read_specs(self):
-        self._check_build_schedule_called()
-
-        if len(self._ready_to_install) > 0:
-            return self.build_jobs, self._ready_to_install.pop()
-        else:
-            return None
+    # def pop_read_specs(self):
+    #     self._check_build_schedule_called()
+    #
+    #     if len(self._ready_to_install) > 0:
+    #         return self.build_jobs, self._ready_to_install.pop()
+    #     else:
+    #         return None
 
     def pop_all_ready_specs(self):
         for spec in self._ready_to_install:
@@ -278,202 +274,365 @@ class SimpleDagScheduler(DagSchedulerBase):
             self._ready_to_install.add(spec)
 
 
-class BarbosaDagScheduler(DagSchedulerBase):
-    """DAG scheduler that uses profiled build times to statically measure and
-    minimize the makespan (the slowest build path)
+class TwoStepSchedulerBase(DagSchedulerBase):
+    """Contains common methods for two step scheduling implementation.
+    The two step schedulers implemented here will try to allocate a number of
+    cores that will improve the makespan of the schedule, then use a list
+    scheduling algorithm to create the schedule"""
+
+    class Task:
+        """Internal task object used for scheduling"""
+
+        def __init__(self, estimator, spec_node):
+            self.start_time = 0
+            self.end_time = 0
+            self.n = 1
+            self.dependencies = []
+            self.dependents = []
+            self._estimator = estimator
+            self.spec_node = spec_node
+            self._t_level = 0
+            self._b_level = self.exec_time()
+            # DAG can be multi-rooted. This helps traversing loops prune
+            # tasks already visited
+            self.visited = False
+            # Caches a value of a heavily used inner-loop value
+            self.criticality = self._b_level + self._t_level
+            # Track the number of unscheduled dependencies
+            # to improve lookup time of ready tasks
+            self.unsched_deps = len(self.dependencies)
+            # Identifies which compute node the task
+            # will run when scheduling across multiple nodes
+            self.exec_node_id = None
+
+        def add_dependent(self, dept):
+            self.dependents.append(dept)
+
+        def add_dependency(self, depc):
+            self.dependencies.append(depc)
+            self.unsched_deps = len(self.dependencies)
+
+        def is_entry(self):
+            """Returns whether this task is an entrance task"""
+            return len(self.dependencies) == 0
+
+        def is_exit(self):
+            """Returns whether this task is an exit task"""
+            return len(self.dependents) == 0
+
+        def init_unsched_deps(self):
+            self.unsched_deps = len(self.dependencies)
+
+        def b_level(self, recalculate=False):
+            """Longest path to an exit node including this node"""
+
+            if recalculate:
+                self._b_level = self.exec_time() + max(
+                    [t._b_level for t in self.dependents], default=0)
+
+            return self._b_level
+
+        def t_level(self, recalculate=False):
+            """Longest path to and entrance node excluding this node"""
+
+            if recalculate:
+                self._t_level = max(
+                    (t._t_level + t.exec_time() for t in self.dependencies),
+                    default=0)
+
+            return self._t_level
+
+        # TODO: consider removing. It is more efficient to
+        #  update b/t-levels in one batch
+        def set_procs(self, nproc):
+            """Sets the allocated procs"""
+            if self.n == nproc:
+                return
+
+            self.n = nproc
+
+        def exec_time(self, procs=None):
+            if procs is None:
+                procs = self.n
+            # Using Amdahl's law
+            # return ((1 - self.parallel_portion) + (
+            #            self.parallel_portion / procs)) * self.serial_exec
+            return self._estimator(procs)
+
+        @staticmethod
+        def link_tasks(dpt, dpdc):
+            dpt.add_dependency(dpdc)
+            dpdc.add_dependent(dpt)
+
+    def __init__(self, timing_profile):
+        super.__init__()
+        self.timing_profile = timing_profile
+
+    @staticmethod
+    def calculate_levels(tasks):
+        """Traverses task list to update b-levels and t-levels"""
+
+        # This function gets called a lot and has to traverse the entire DAG
+        # Steps
+        #  - Create a BFS ordering starting with the exit tasks
+        #  - Traverse forward, updating b-level
+        #  - Traverse in reverse, updating t-level and
+        #  criticality (b-level + t-level)
+
+        # Create a list
+        t_len = len(tasks)
+        idx = 0
+        l_queue = [None] * t_len
+
+        for t in tasks:
+            t.visited = False
+
+        # Add exit nodes
+        for t in tasks:
+            if t.is_exit():
+                l_queue[idx] = t
+                t.visited = True
+                idx += 1
+
+        # Update b-level BF traversal
+        i = 0
+        while i < t_len:
+            t = l_queue[i]
+            t.b_level(True)
+            for td in t.dependencies:
+                if not td.visited:
+                    td.visited = True
+                    l_queue[idx] = td
+                    idx += 1
+            i += 1
+
+        # Update t-level and criticality in reverse traversal
+        while i > 0:
+            i -= 1
+            t = l_queue[i]
+            t.t_level(True)
+            t.criticality = t._b_level + t._t_level
+
+    @staticmethod
+    def get_ready_tasks(tasks):
+        """A subset of tasks whose dependencies are scheduled"""
+        return [t for t in tasks if t.unsched_deps == 0]
+
+    @staticmethod
+    def get_makespan(tasks):
+        """Makespan is determined by the longest end time"""
+        return max([t.end_time for t in tasks])
+
+    @staticmethod
+    def schedule_task(t, proc_idle_time, p_list, start_time):
+        """Schedules a task, mutates processor idle times"""
+        new_end_time = start_time + t.exec_time()
+        for p in p_list:
+            proc_idle_time[p] = new_end_time
+
+        t.start_time = start_time
+        t.end_time = new_end_time
+
+    @staticmethod
+    def find_idle_hole(n, earliest_start, proc_idle_time):
+        """Finds the earliest processor idle for a given number of cores
+        returns tuple: (processor list, start time)
+        This implementation will also try to minimize holes in scheduling"""
+
+        # sort process ranks by idle time and select the first n
+        p_list = sorted(range(len(proc_idle_time)),
+                        key=lambda k: proc_idle_time[k])
+
+        stop = n
+        while stop < len(p_list) and proc_idle_time[
+            p_list[stop]] <= earliest_start:
+            stop += 1
+
+        p_list = p_list[stop - n: stop]
+
+        return p_list, max(earliest_start, proc_idle_time[p_list[-1]])
+
+    @staticmethod
+    def critical_tasks(t_list):
+        """Returns a list of tasks on the critical path"""
+
+        crit_tasks = []
+        max_cost = 0
+
+        for t in t_list:
+            cost = t.criticality
+            if cost > max_cost:
+                max_cost = cost
+                crit_tasks = [t]
+            elif cost == max_cost:
+                crit_tasks.append(t)
+
+        return crit_tasks
+
+    def mls(self, t_list, nproc):
+        """M-task list scheduler
+        Creates a schedule from a set of tasks which have been assigned cores.
+        Works by iteratively selecting a task with the highest priority and
+        scheduling it as soon as possible.
+
+        Returns a list of tasks with start and stop times"""
+
+        proc_idle_time = [0] * nproc
+        unsched = set(t_list)
+        scheduled = set()
+
+        # Make sure any previous scheduling information is wiped
+        for t in unsched:
+            t.start_time = 0
+            t.end_time = 0
+            t.init_unsched_deps()
+
+        while len(unsched) > 0:
+            # Priority is determined by the ready task with the highest b-level
+            t = max(self.get_ready_tasks(unsched), key=lambda x: x._b_level)
+
+            # Get the tasks earliest start time
+            earliest_start = max([d.end_time for d in t.dependencies],
+                                 default=0)
+
+            # Give it a schedule
+            self.schedule_task(t, proc_idle_time,
+                               *self.find_idle_hole(t.n, earliest_start,
+                                                    proc_idle_time))
+            unsched.remove(t)
+            scheduled.add(t)
+
+            for dpdt in t.dependents:
+                dpdt.unsched_deps -= 1
+
+        return list(scheduled)
+
+
+class CPRDagScheduler(TwoStepSchedulerBase):
+    """Critical Path Reduction scheduler.
+    CPR is a two step scheduler that iteratively to allocates more cores
+    to critical tasks and tests the resulting schedule for a decrease in
+    makespan.
+
+    It's time complexity is high, and becomes very costly after about 200 specs:
+
+    --> O(EV^2P + V^3P(logV + PlogP)) Where:
+    P is the number of cores
+    V is the number of specs
+    E is the number of dependencies between specs
     """
 
-    # Some builds do not scale, require a minimum speedup before allowing
-    # a build to use multiple cores
-    FLAT_SCALING_CUTOFF = 1.15
+    def __init__(self, timing_profile):
+        super.__init__(timing_profile)
+        self.tasks = []
 
-    def __init__(self, pkg_build_times, workers=1, num_cores=get_cpu_count()):
-        super.__init__()
-        self.build_jobs = int(round(get_cpu_count() / workers))
-        self._ready_to_install = set()
-        self._pkg_build_times = pkg_build_times
-        self._cores = num_cores
-        self._mem_t_level = {}
-        self._mem_b_level = {}
+        # A list task end times for tasks that have not yet completed. Used
+        # for selecting the next task to schedule
+        self.incomplete_task_end_times = []
 
-    def _init_estimators(self):
-        """Makes an approximating curve and initial job counts for each spec
-        node"""
+        # spec -> task lookup table
+        self.spec_to_task = {}
 
-        # First, create approximating curves for each profiled package
-        unprofiled_nodes = set()
-        for node in self.tree:
-            name = node.spec.name
+    def _build_task_list(self):
+        """Translates the spec tree defined in the parent into a task list
+        usable for this algorithm"""
 
-            # Remember the nodes that are not profiled
-            if name not in self._pkg_build_times:
-                unprofiled_nodes.add(node)
-            else:
-                e = AsymptoticTimeEstimator(
-                    self._pkg_build_times[name]['make_jobs'],
-                    self._pkg_build_times[name]['time'])
-                node.weight_curve = e
+        self.tasks = []
 
-        # When there are some profiled and some unprofiled nodes, create a mean
-        # performance curve and assign it to the unprofiled
-        if 0 < len(unprofiled_nodes) < len(self.tree):
+        # DFS traversal starting with the top-level dependency
+        nds = [n for n in self.tree.values() if len(n.dependents) == 0]
 
-            def avg(nums):
-                return float(sum(nums) / max(len(nums), 1))
+        # the DAG can be multi-rooted, so avoid
+        # visiting the same dependency twice
+        visited = set(n.hash for n in nds)
 
-            job_range = list(range(1, self._cores + 1))
+        while len(nds) > 0:
+            nd = nds.pop(0)
 
-            time_set = []
-            for node in self.tree:
-                if node not in unprofiled_nodes:
-                    time_set.append([node.spec.weight_curve.estimate(j) for
-                                     j in job_range])
+            for s in nd.dependencies:
+                if s.hash not in visited:
+                    nds.append(s)
+                    visited.add(s.hash)
 
-            # generate a list of mean profiled times
-            mean_times = list(map(avg, (zip(*time_set))))
-            mean_curve = AsymptoticTimeEstimator(job_range, mean_times)
+            # Create the task
+            t = self.Task(None, nd)
 
-            for node in unprofiled_nodes:
-                node.weight_curve = mean_curve
+            # Make edges between tasks according to Spec's dependencies
+            for dpt in nd.depenents:
+                # This is a BF traversal, so the parent
+                # must have been added recently
+                for task in reversed(self.tasks):
+                    if task.spec_node.hash == dpt.hash:
+                        self.Task.link_tasks(task, t)
+                        break
 
-            # Select number of jobs that maximize performance
-            for node in self.tree:
-                job_time_tup = ((j, e.estimate(j)) for j in
-                                range(1, self._cores + 1))
-                one_job_speed = job_time_tup[0][1]
-                fast_j_count, fast_j_speed = max(job_time_tup,
-                                                 key=lambda tup: tup[1])
-
-                # When the build doesn't scale, do not allow it to use more
-                # than a core
-                if fast_j_speed / one_job_speed > self.FLAT_SCALING_CUTOFF:
-                    node.optimal_jobs = fast_j_count
-                    node.jobs = fast_j_count
-                else:
-                    node.optimal_jobs = 1
-                    node.jobs = 1
-
-        elif len(unprofiled_nodes) == len(self.tree):
-            raise Exception('No profiling data. Not currently supported')
-
-    def _ready_nodes(self):
-        """Returns a list of nodes that have no dependencies and are ready to
-        install"""
-        return {node.spec for _, node in self.tree.items()
-                if not len(node.dependencies)}
-
-    def _synthetic_ready_nodes(self, completed_set):
-        """Generates a set of nodes that would be ready if the nodes in the
-        completed set were installed. Allows for a non-destructive DAG
-        traversal"""
-        c_set = set(completed_set)
-        ready = []
-
-        # TODO: do not iterate over the entire tree
-        for node in [n for n in self.tree if n not in c_set]:
-            if not (dep in c_set for dep in node.dependencies):
-                ready.append(node)
-
-        return ready
-
-    def _tlevel(self, node):
-        """Calculates node's top-level. top-level is defined as the longest
-        path to the top of the DAG from the given node, excluding the node."""
-
-        # # Use memoization when possible
-        # if node.hash in self._mem_t_level:
-        #     return self._mem_t_level[node.hash]
-        # else:
-        dep_tlevels = [0]
-        for d in node.dependents:
-            dep_tlevels.append(self._tlevel(d) + d.weight_curve(d.jobs))
-
-        tlevel = max(dep_tlevels)
-        self._mem_t_level[node.hash] = tlevel
-        return tlevel
-
-    def _blevel(self, node):
-        """Calculates node's bottom-level. Bottom-level is defined as the
-        path to the most distant leaf, including the node"""
-
-        # # Use memoization
-        # if node.hash in self._mem_b_level:
-        #     blevel = self._mem_b_level[node.hash]
-        # else:
-        blevel = max([self._blevel(n) for n in node.dependencies] + [0])
-        self._mem_t_level[node.hash] = blevel + node.weight_curve(node.jobs)
-
-        return blevel
+            # Add task to the list
+            self.tasks.append(t)
 
     def build_schedule(self, print_time=False):
-        self._build_schedule_called = True
-        self.prune_installed()
 
-        self._mem_t_level = {}
-        self._mem_b_level = {}
-        self._init_estimators()
+        # Initializing tasks and schedule
+        self._build_task_list()
 
-        scheduled_nodes = set()
-        schedule_list = []
-        ready = self._synthetic_ready_nodes(scheduled_nodes)
+        for t in self.tasks:
+            t.set_procs(1)
 
-        while len(ready) > 0:
-            # When there are more ready tasks than cores, sort the tasks by
-            # t-level and select the heaviest tasks up to the core limit
-            t_levels = {r: self._tlevel(r) for r in ready}
-            ordered = sorted(t_levels.items(), key=lambda item: item[1],
-                             reverse=True)
-            ready = [v for k, v in ordered[:min(len(ready), get_cpu_count())]]
+        self.calculate_levels(self.tasks)
 
-            def get_optimal_cpus():
-                return sum([r.jobs for r in ready])
+        nproc = get_cpu_count()
+        sched = self.mls(self.tasks, nproc)
 
-            # Compute the optimal number of CPUs for the tasks
-            optimal_cpus = get_optimal_cpus()
+        # Keep looping until a better schedule can't be created
+        sched_modified = True
+        while sched_modified:
+            sched_modified = False
+            resizable_tasks = [t for t in self.tasks if t.n < nproc]
 
-            # Re-weight make-jobs while optimal CPUs exceed available
-            # Do not allow jobs to decrease below 1
-            while optimal_cpus > get_cpu_count():
-                for t in ready:
-                    t.jobs = min(1,
-                                 int((get_cpu_count() / optimal_cpus) * t.jobs))
-                optimal_cpus = get_optimal_cpus()
+            while not sched_modified and len(resizable_tasks) > 0:
+                # select a task on the critical path
+                # and increase its processor allocation
+                ct = self.critical_tasks(resizable_tasks)[0]
+                old_makespan = self.get_makespan(sched)
+                ct.set_procs(ct.n + 1)
+                self.calculate_levels(self.tasks)
 
-            # Compute b-level
-            b_levels = {r: self._blevel(r) for r in ready}
+                # create a new schedule
+                sched = self.mls(self.tasks, nproc)
 
-            prev_max = set()
-            while True:
-
-                # Get nodes with min and max b-levels
-                max_bl = max(b_levels.items(), key=lambda bv: bv[1])[0]
-                min_bl = max(b_levels.items(), key=lambda bv: bv[1])[0]
-
-                if min_bl in prev_max:
-                    break
+                # if the makespan decreased, use the new schedule
+                new_makespan = self.get_makespan(sched)
+                if new_makespan < old_makespan:
+                    sched_modified = True
                 else:
-                    prev_max.add(max_bl)
+                    # Otherwise, revert the schedule and remove
+                    # the task from the list
+                    ct.set_procs(ct.n - 1)
+                    self.calculate_levels(self.tasks)
+                    resizable_tasks.remove(ct)
+                    sched = self.mls(self.tasks, nproc)
 
-                # Take a processor away from the faster job and give it to the
-                # slower one
-                min_bl.jobs -= 1
-                max_bl.jobs += 1
+        self.incomplete_task_end_times = sorted(t.end_time for t in self.tasks)
+        self.spec_to_task = {t.spec_node.spec: t for t in self.tasks}
 
-                # Drop builds that have no jobs (i.e. it would be more
-                # cost-effective to start them later)
-                if min_bl.jobs == 0:
-                    ready.remove(min_bl)
-                    b_levels.pop(min_bl)
-                else:
-                    b_levels[min_bl] = self._blevel(min_bl)
+    def install_successful(self, spec):
+        task = self.spec_to_task[spec]
 
-                # Can't continue re-weighting if there < 2 jobs
-                if len(b_levels) < 2:
-                    break
+        # propagate to the base class
+        self._install_successful(spec)
 
-            for n in ready:
-                schedule_list.append(n)
-                scheduled_nodes.add(n)
+        # remove end time from the list
+        self.incomplete_task_end_times.remove(task.end_time)
 
-            # compute the set of ready tasks
-            self._synthetic_ready_nodes(scheduled_nodes)
+    def install_failed(self, spec):
+
+        # Get all of the tasks that cannot execute
+        unreachable_tasks = [self.spec_to_task[t]
+                             for t in super().install_failed(spec)]
+        unreachable_tasks.append(self.spec_to_task[spec])
+
+        # remove from task list
+        for t in unreachable_tasks:
+            self.tasks.remove(t)
+            self.incomplete_task_end_times.remove(t.end_time)
+
+    def pop_all_ready_specs(self):
