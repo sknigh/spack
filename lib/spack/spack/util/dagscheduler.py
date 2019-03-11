@@ -636,3 +636,14 @@ class CPRDagScheduler(TwoStepSchedulerBase):
             self.incomplete_task_end_times.remove(t.end_time)
 
     def pop_all_ready_specs(self):
+        """ Generates a list of ready tasks
+
+        The schedule is generated with concrete start and end times. A task may
+        begin when all tasks with an end time earlier than its start time have
+        completed"""
+
+        earliest_end_time = min(self.incomplete_task_end_times,
+                                default=float('inf'))
+        for t in self.tasks:
+            if t.start_time < earliest_end_time:
+                yield t
