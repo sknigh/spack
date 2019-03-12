@@ -335,6 +335,10 @@ def make_argument_parser(**kwargs):
     parser.add_argument(
         '--pdb', action='store_true',
         help="run spack under the pdb debugger")
+    parser.add_argument(
+        '--timings', default='timings.sqlite3', metavar='T',
+        help='Create a sqlite DB of installation time statistics'
+    )
 
     env_group = parser.add_mutually_exclusive_group()
     env_group.add_argument(
