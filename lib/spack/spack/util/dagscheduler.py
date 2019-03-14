@@ -283,13 +283,14 @@ class TwoStepSchedulerBase(DagSchedulerBase):
     class Task:
         """Internal task object used for scheduling"""
 
-        def __init__(self, estimator, spec_node):
+        def __init__(self, timings_database, spec_node):
             self.start_time = 0
             self.end_time = 0
             self.n = 1
             self.dependencies = []
             self.dependents = []
-            self._estimator = estimator
+            self._estimator = self._init_estimator(spec_node.spec.name,
+                                                   timings_database)
             self.spec_node = spec_node
             self._t_level = 0
             self._b_level = self.exec_time()
@@ -304,6 +305,17 @@ class TwoStepSchedulerBase(DagSchedulerBase):
             # Identifies which compute node the task
             # will run when scheduling across multiple nodes
             self.exec_node_id = None
+
+        @staticmethod
+        def _init_estimator(spec_name, timings_database):
+            # get list of (job, time) tuples generator
+            tup_list = timings_database.package_timings(spec_name)
+
+            # insert into an estimator
+            est = AsymptoticTimeEstimator()
+            est.add_measurement(*zip(*tup_list))
+
+            return est
 
         def add_dependent(self, dept):
             self.dependents.append(dept)
@@ -354,10 +366,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         def exec_time(self, procs=None):
             if procs is None:
                 procs = self.n
-            # Using Amdahl's law
-            # return ((1 - self.parallel_portion) + (
-            #            self.parallel_portion / procs)) * self.serial_exec
-            return self._estimator(procs)
+            return self._estimator.estimate(procs)
 
         @staticmethod
         def link_tasks(dpt, dpdc):
@@ -533,6 +542,8 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         # spec -> task lookup table
         self.spec_to_task = {}
 
+        self._popped_tasks = set()
+
     def _build_task_list(self):
         """Translates the spec tree defined in the parent into a task list
         usable for this algorithm"""
@@ -555,7 +566,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
                     visited.add(s.hash)
 
             # Create the task
-            t = self.Task(None, nd)
+            t = self.Task(self.timings_database, nd)
 
             # Make edges between tasks according to Spec's dependencies
             for dpt in nd.depenents:
@@ -591,7 +602,9 @@ class CPRDagScheduler(TwoStepSchedulerBase):
             while not sched_modified and len(resizable_tasks) > 0:
                 # select a task on the critical path
                 # and increase its processor allocation
-                ct = self.critical_tasks(resizable_tasks)[0]
+                # ct = self.critical_tasks(resizable_tasks)[0]
+                ct = max(self.critical_tasks(resizable_tasks),
+                         key=lambda t: t._b_level)
                 old_makespan = self.get_makespan(sched)
                 ct.set_procs(ct.n + 1)
                 self.calculate_levels(self.tasks)
@@ -645,5 +658,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         earliest_end_time = min(self.incomplete_task_end_times,
                                 default=float('inf'))
         for t in self.tasks:
-            if t.start_time < earliest_end_time:
+            if t.start_time < earliest_end_time and t not in self._popped_tasks:
+                # ensure the task is only returned from this generator once
+                self._popped_tasks.add(t)
                 yield t

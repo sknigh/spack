@@ -41,7 +41,7 @@ def update_kwargs_from_args(args, kwargs):
         'verbose': args.verbose,
         'fake': args.fake,
         'dirty': args.dirty,
-        'use_cache': args.use_cache
+        'use_cache': args.use_cache,
     })
     if hasattr(args, 'setup'):
         setups = set()
@@ -185,16 +185,16 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
             env.install(abstract_spec, spec, **kwargs)
             env.write()
         else:
-            ms = SimpleDagScheduler()
-            ms.add_specs(workers=cli_args.nprocs,
-                         specs=[spec.concretized()],
-                         verbose=True)
-            ms.prune_installed(verbose=True)
-            ms.build_schedule()
-
-            mpsi = MultiProcSpecInstaller(cli_args.nprocs)
-            mpsi.install_dag(ms)
-            #spec.package.do_install(**kwargs)
+            # ms = SimpleDagScheduler()
+            # ms.add_specs(workers=cli_args.nprocs,
+            #              specs=[spec.concretized()],
+            #              verbose=True)
+            # ms.prune_installed(verbose=True)
+            # ms.build_schedule()
+            #
+            # mpsi = MultiProcSpecInstaller(cli_args.nprocs)
+            # mpsi.install_dag(ms)
+            spec.package.do_install(**kwargs)
 
     try:
         if cli_args.things_to_install == 'dependencies':

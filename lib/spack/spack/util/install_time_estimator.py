@@ -41,10 +41,10 @@ class LogTimeEstimator(InstallTimeEstimatorBase):
 
 
 class AsymptoticTimeEstimator(InstallTimeEstimatorBase):
-    """Use an asymptotic third degree polynomial curve to estimate build time"""
+    """Use an asymptotic first degree polynomial curve to estimate build time"""
     def __init__(self, make_jobs=[], times=[]):
         super(InstallTimeEstimatorBase, self).__init__(make_jobs, times)
 
     def _compute_estimate(self):
         self._estimate = np.poly1d(
-            np.polyfit(1/self._jobs, self._times, deg=3))
+            np.polyfit(1/self._jobs, self._times, deg=1))

@@ -1480,7 +1480,10 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                         tty_msg('Copying source to {0}'.format(src_target))
                         install_tree(self.stage.source_path, src_target)
 
-                    td = TimingsDatabase()
+                    time_phases = kwargs.get('time_phases', False)
+
+                    if time_phases:
+                        td = TimingsDatabase()
 
                     # Do the real install in the source directory.
                     with working_dir(self.stage.source_path):
@@ -1496,7 +1499,8 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                             for phase_name, phase_attr in zip(
                                     self.phases, self._InstallPhase_phases):
 
-                                start = datetime.now()
+                                if time_phases:
+                                    start = datetime.now()
                                 with logger.force_echo():
                                     inner_debug = tty.is_debug()
                                     tty.set_debug(debug_enabled)
@@ -1509,11 +1513,12 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
 
                                 phase(self.spec, self.prefix)
 
-                                tot_time = (datetime.now() - start)
-                                td.add_phase_time(self.name,
-                                                  phase_name,
-                                                  self.make_jobs,
-                                                  tot_time.total_seconds())
+                                if time_phases:
+                                    tot_time = (datetime.now() - start)
+                                    td.add_phase_time(self.name,
+                                                      phase_name,
+                                                      self.make_jobs,
+                                                      tot_time.total_seconds())
 
                     echo = logger.echo
                     self.log()
