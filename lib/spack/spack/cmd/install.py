@@ -18,8 +18,9 @@ import spack.environment as ev
 import spack.fetch_strategy
 import spack.paths
 import spack.report
-from spack.util.dagscheduler import ParallelConcretizer, SimpleDagScheduler
+from spack.util.dagscheduler import schedule_selector
 from spack.util.multiproc_installer import MultiProcSpecInstaller
+from spack.timings_database import TimingsDatabase
 from spack.error import SpackError
 
 
@@ -42,7 +43,9 @@ def update_kwargs_from_args(args, kwargs):
         'fake': args.fake,
         'dirty': args.dirty,
         'use_cache': args.use_cache,
-        'time_phases': args.time_phases
+        'time_phases': args.time_phases,
+        'use_timings': args.use_timings,
+        'scheduler': args.scheduler,
     })
     if hasattr(args, 'setup'):
         setups = set()
@@ -95,6 +98,14 @@ the dependencies"""
     subparser.add_argument(
         '--time-phases', action='store_true',
         help='Create a sqlite database with phase timing information')
+    subparser.add_argument(
+        '--use-timings', action='store', default=None, metavar='FILE',
+        help='Use timings sqlite3 file for scheduling'
+    )
+    subparser.add_argument(
+        '--scheduler', action='store', default=None,
+        help='Specify a DAG scheduler to use'
+    )
     arguments.add_common_arguments(subparser, ['no_checksum'])
     subparser.add_argument(
         '-v', '--verbose', action='store_true',
@@ -189,16 +200,15 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
             env.install(abstract_spec, spec, **kwargs)
             env.write()
         else:
-            # ms = SimpleDagScheduler()
-            # ms.add_specs(workers=cli_args.nprocs,
-            #              specs=[spec.concretized()],
-            #              verbose=True)
-            # ms.prune_installed(verbose=True)
-            # ms.build_schedule()
-            #
-            # mpsi = MultiProcSpecInstaller(cli_args.nprocs)
-            # mpsi.install_dag(ms)
-            spec.package.do_install(**kwargs)
+            # TimingsDatabase('timings.sqlite3')
+            # scheduler = SimpleDagScheduler()
+            # scheduler.add_spec(spec.concretized())
+            # scheduler.prune_installed(verbose=True)
+            scheduler = schedule_selector([spec], timing_db=TimingsDatabase('timings.sqlite3'))
+            mpsi = MultiProcSpecInstaller()
+            mpsi.install_dag(scheduler)
+
+            # spec.package.do_install(**kwargs)
 
     try:
         if cli_args.things_to_install == 'dependencies':

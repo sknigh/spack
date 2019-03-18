@@ -1419,6 +1419,7 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                     make_jobs=make_jobs,
                     tests=tests,
                     dirty=dirty,
+                    time_phases=time_phases,
                     **kwargs)
 
         tty_msg(colorize('@*{Installing} @*g{%s}' % self.name))

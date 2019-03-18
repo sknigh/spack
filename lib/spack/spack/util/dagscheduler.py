@@ -7,9 +7,6 @@ import llnl.util.tty as tty
 from llnl.util.lang import memoized
 from spack.util.install_time_estimator import AsymptoticTimeEstimator
 
-# Open questions
-# If a package is not profiled. What should the default behavior be? Max jobs?
-
 # TODO: Returns logical processors, which will be 1x, 2x, or 4x the
 #  number of available hardware cores
 @memoized
@@ -118,14 +115,13 @@ class ParallelConcretizer:
                 len(specs), round(tot_time, 2), round(spec_per_second, 2)))
 
 
-class DagSchedulerBase:
+class DagManager:
     """Base class for a DAG Scheduler
     Defines methods for manipulating a spec DAG.
     Generating a schedule is left to derived classes"""
 
     def __init__(self):
         self.tree = dict()
-        self._build_schedule_called = False
 
     def add_spec(self, spec):
         """Add a Spec to the DAG"""
@@ -147,7 +143,7 @@ class DagSchedulerBase:
             tty.msg('%d specs already installed, %d not yet installed' % (
                 initial_spec_count - spec_count, spec_count))
 
-    def _install_successful(self, spec):
+    def install_successful(self, spec):
         """Removes a spec from the DAG and returns any new specs that no
         longer have dependencies."""
         new_no_deps = set()
@@ -165,9 +161,6 @@ class DagSchedulerBase:
 
         self.tree.pop(spec_node.hash)
         return new_no_deps
-
-    def install_successful(self, spec):
-        raise NotImplementedError()
 
     def install_failed(self, spec):
         """Removes a spec and its dependents. Returns any dependent specs that
@@ -218,59 +211,100 @@ class DagSchedulerBase:
                         self.tree[cur_hash] = s
                         unresolved_specs.extend(
                             [(s, dep) for dep in s.dependencies])
-                        # print('Processed %s' % cur_spec.name)
+                        print('Processed %s' % cur_spec.name)
 
                     # Add a dependent when a parent is defined
                     if parent is not None:
                         self.tree[cur_hash].dependents.add(parent.hash)
 
+
+class DagSchedulerBase:
+    def __init__(self, dag_manager):
+        if not dag_manager:
+            dag_manager = DagManager()
+
+        self._dag_manager = dag_manager
+        self._build_schedule_called_already = False
+
+    def build_schedule(self, print_time=False):
+        """Constructs a schedule, should not be called multiple times"""
+        raise NotImplementedError()
+
+    def add_spec(self, spec):
+        """Add a Spec to the DAG"""
+        self._dag_manager.add_spec(spec)
+
+    def add_specs(self, specs):
+        """Add multiple Specs to the DAG"""
+        self._dag_manager.add_specs(specs)
+
+    def install_successful(self, spec):
+        """Indicate a spec was successfully installed"""
+        raise NotImplementedError()
+
+    def install_failed(self, spec):
+        """Indicate a spec failed to install, return list of specs that will
+        not be installed"""
+        for spec in self._dag_manager.install_failed(spec):
+            yield spec
+
+    def _build_schedule_called(self):
+        """Ensure build_schedule is only called once"""
+        if not self._build_schedule_called_already:
+            self._build_schedule_called_already = True
+        else:
+            raise Exception('Build schedule already called')
+
     def _check_build_schedule_called(self):
         """Ensure build schedule is called before doing work"""
         if not self._build_schedule_called:
-            raise Exception('DagScheduler Error: build_schedule() not called')
+            raise Exception('Dag Scheduler Error: build_schedule() not called')
 
-    def build_schedule(self, print_time=False):
-        """Allow static schedulers to construct a schedule"""
+    def prune_installed(self, verbose=False):
+        self._dag_manager.prune_installed(verbose)
+
+    def pop_ready_specs(self):
+        """Returns (Build Jobs, Spec) for every Spec ready to install. Only
+        returns each spec once."""
         raise NotImplementedError()
 
-    def pop_spec(self):
-        """Returns a ready spec and the number of build jobs"""
-        raise NotImplementedError()
+    def count(self):
+        return self._dag_manager.count()
 
 
 class SimpleDagScheduler(DagSchedulerBase):
     """Implements a Dag Scheduler
-    - No dependency ordering
-    - Supports single node builds
-    - Make jobs are set to cores/workers"""
+    Serially unwinds DAG like standard Spec dependency traversal"""
 
-    def __init__(self, workers=1):
-        super().__init__()
-        # Allows for slight over-provisioning
-        self.build_jobs = int(round(get_cpu_count()/workers))
+    def __init__(self, workers=get_cpu_count(), dag_manager=None):
+        super().__init__(dag_manager)
+
+        self.make_jobs = workers
         self._ready_to_install = set()
+        self._outstanding_spec = None
 
     def build_schedule(self, print_time=False):
-        self._build_schedule_called = True
+        self._build_schedule_called()
         self.prune_installed()
-        self._ready_to_install = set(self.ready_specs())
+        self._ready_to_install = set(self._dag_manager.ready_specs())
 
-    # def pop_read_specs(self):
-    #     self._check_build_schedule_called()
-    #
-    #     if len(self._ready_to_install) > 0:
-    #         return self.build_jobs, self._ready_to_install.pop()
-    #     else:
-    #         return None
+    def pop_ready_specs(self):
+        # This DAG Scheduler builds one spec at a time with all cores
+        # Do not pop another Spec when one is outstanding
+        if self._outstanding_spec or len(self._ready_to_install) == 0:
+            return []
 
-    def pop_all_ready_specs(self):
-        for spec in self._ready_to_install:
-            yield self.build_jobs, spec
-
-        self._ready_to_install.clear()
+        spec = self._ready_to_install.pop()
+        self._outstanding_spec = spec
+        return [(self.make_jobs, spec)]
 
     def install_successful(self, spec):
-        for spec in self._install_successful(spec):
+        if spec.full_hash() != self._outstanding_spec.full_hash():
+            raise Exception('SimpleDagScheduler does not recognize this spec')
+
+        self._outstanding_spec = None
+
+        for spec in self._dag_manager.install_successful(spec):
             self._ready_to_install.add(spec)
 
 
@@ -306,6 +340,10 @@ class TwoStepSchedulerBase(DagSchedulerBase):
             # will run when scheduling across multiple nodes
             self.exec_node_id = None
 
+            tty.warn('Creating task for %s' % self.spec_node.spec.name)
+            for i in [1, 2, 4, 8]:
+                tty.warn(' %s: %s' % (i, round(self._estimator.estimate(i), 2)))
+
         @staticmethod
         def _init_estimator(spec_name, timings_database):
             # get list of (job, time) tuples generator
@@ -313,7 +351,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
             # insert into an estimator
             est = AsymptoticTimeEstimator()
-            est.add_measurement(*zip(*tup_list))
+            est.add_measurements(*zip(*tup_list))
 
             return est
 
@@ -373,9 +411,9 @@ class TwoStepSchedulerBase(DagSchedulerBase):
             dpt.add_dependency(dpdc)
             dpdc.add_dependent(dpt)
 
-    def __init__(self, timing_profile):
-        super.__init__()
-        self.timing_profile = timing_profile
+    def __init__(self, dag_manager, timings_database):
+        super().__init__(dag_manager)
+        self.timings_database = timings_database
 
     @staticmethod
     def calculate_levels(tasks):
@@ -531,8 +569,8 @@ class CPRDagScheduler(TwoStepSchedulerBase):
     E is the number of dependencies between specs
     """
 
-    def __init__(self, timing_profile):
-        super.__init__(timing_profile)
+    def __init__(self, timings_database, dag_manager=None):
+        super().__init__(dag_manager, timings_database)
         self.tasks = []
 
         # A list task end times for tasks that have not yet completed. Used
@@ -551,7 +589,8 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         self.tasks = []
 
         # DFS traversal starting with the top-level dependency
-        nds = [n for n in self.tree.values() if len(n.dependents) == 0]
+        nds = [n for n in self._dag_manager.tree.values()
+               if len(n.dependents) == 0]
 
         # the DAG can be multi-rooted, so avoid
         # visiting the same dependency twice
@@ -559,21 +598,20 @@ class CPRDagScheduler(TwoStepSchedulerBase):
 
         while len(nds) > 0:
             nd = nds.pop(0)
-
             for s in nd.dependencies:
-                if s.hash not in visited:
-                    nds.append(s)
-                    visited.add(s.hash)
+                if s.full_hash() not in visited:
+                    nds.append(self._dag_manager.tree[s.full_hash()])
+                    visited.add(s.full_hash())
 
             # Create the task
             t = self.Task(self.timings_database, nd)
 
             # Make edges between tasks according to Spec's dependencies
-            for dpt in nd.depenents:
+            for dpt in nd.dependents:
                 # This is a BF traversal, so the parent
                 # must have been added recently
                 for task in reversed(self.tasks):
-                    if task.spec_node.hash == dpt.hash:
+                    if task.spec_node.hash == dpt:
                         self.Task.link_tasks(task, t)
                         break
 
@@ -581,6 +619,8 @@ class CPRDagScheduler(TwoStepSchedulerBase):
             self.tasks.append(t)
 
     def build_schedule(self, print_time=False):
+
+        self._build_schedule_called()
 
         # Initializing tasks and schedule
         self._build_task_list()
@@ -631,7 +671,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         task = self.spec_to_task[spec]
 
         # propagate to the base class
-        self._install_successful(spec)
+        self._dag_manager.install_successful(spec)
 
         # remove end time from the list
         self.incomplete_task_end_times.remove(task.end_time)
@@ -650,7 +690,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         # Return the list to the caller
         return failed
 
-    def pop_all_ready_specs(self):
+    def pop_ready_specs(self):
         """ Generates a list of ready tasks
 
         The schedule is generated with concrete start and end times. A task may
@@ -664,3 +704,26 @@ class CPRDagScheduler(TwoStepSchedulerBase):
                 # ensure the task is only returned from this generator once
                 self._popped_tasks.add(t)
                 yield t.n, t.spec_node.spec
+
+
+def schedule_selector(specs,
+                      timing_db=None,
+                      preferred_scheduler=None):
+    """Selects and initializes the best scheduler from the provided
+    information"""
+
+    dm = DagManager()
+    dm.add_specs(specs, 2)
+    dm.prune_installed()
+
+    if not timing_db or preferred_scheduler == 'SimpleDagScheduler':
+        # No timing information prevents sophisticated scheduling
+        tty.msg('Selected SimpleDagScheduler')
+        return SimpleDagScheduler(dag_manager=dm)
+
+    # Large DAGs should use MCPA because CPR gets too slow
+    # if dm.count() > 150:
+    #     return MCPADagScheduler()
+
+    tty.msg('Selected CPRDagScheduler')
+    return CPRDagScheduler(timing_db, dag_manager=dm)

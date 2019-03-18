@@ -42,57 +42,57 @@ class TimingsDatabase:
                           (package, phase, jobs, time_seconds))
         self._conn.commit()
 
-    def phase_time_jobs(self, package, phase, jobs):
-        """Returns average time for the specified jobs at a given phase"""
+    # def phase_time_jobs(self, package, phase, jobs):
+    #     """Returns average time for the specified jobs at a given phase"""
+    #
+    #     query = """SELECT AVG(time)
+    #                FROM phase_time WHERE name=? AND phase=? AND jobs=?
+    #                GROUP BY name, phase, jobs"""
+    #
+    #     return next(self._cur.execute(query, (package, phase, jobs)))[0]
 
-        query = """SELECT AVG(time)
-                   FROM phase_time WHERE name=? AND phase=? AND jobs=?
-                   GROUP BY name, phase, jobs"""
+    # def phase_time_gen(self, package, phase):
+    #     """Returns tuple (jobs, avg time) generator"""
+    #
+    #     query = """SELECT jobs, AVG(time)
+    #                FROM phase_time WHERE name=? AND phase=?
+    #                GROUP BY name, phase, jobs"""
+    #
+    #     for c in self._cur.execute(query, (package, phase)):
+    #         yield c
 
-        return next(self._cur.execute(query, (package, phase, jobs)))[0]
+    # def packages_and_phases_gen(self):
+    #     """Returns tuple (package, phase) generator for each unique
+    #     package and phase"""
+    #
+    #     query = """SELECT DISTINCT name, phase FROM phase_time"""
+    #
+    #     for c in self._cur.execute(query):
+    #         yield c
 
-    def phase_time_gen(self, package, phase):
-        """Returns tuple (jobs, avg time) generator"""
+    # def phases_gen(self, package):
+    #     """Returns phases for a package"""
+    #
+    #     query = """SELECT DISTINCT phase
+    #                FROM phase_time
+    #                WHERE name=?"""
+    #
+    #     for c in self._cur.execute(query, (package,)):
+    #         yield c
 
-        query = """SELECT jobs, AVG(time)
-                   FROM phase_time WHERE name=? AND phase=?
-                   GROUP BY name, phase, jobs"""
-
-        for c in self._cur.execute(query, (package, phase)):
-            yield c
-
-    def packages_and_phases_gen(self):
-        """Returns tuple (package, phase) generator for each unique
-        package and phase"""
-
-        query = """SELECT DISTINCT name, phase FROM phase_time"""
-
-        for c in self._cur.execute(query):
-            yield c
-
-    def phases_gen(self, package):
-        """Returns phases for a package"""
-
-        query = """SELECT DISTINCT phase
-                   FROM phase_time
-                   WHERE name=?"""
-
-        for c in self._cur.execute(query, (package,)):
-            yield c
-
-    def packages_gen(self):
-        """Returns timed packages"""
-
-        query = """SELECT DISTINCT phase
-                   FROM phase_time"""
-
-        for c in self._cur.execute(query):
-            yield c
+    # def packages_gen(self):
+    #     """Returns timed packages"""
+    #
+    #     query = """SELECT DISTINCT phase
+    #                FROM phase_time"""
+    #
+    #     for c in self._cur.execute(query):
+    #         yield c
 
     def package_timings(self, package):
         """Returns tuples of (jobs, total execution) time for a package"""
 
-        # There may be multiple (phase, jobs, time) measurements to coalesce
+        # Average duplicate (phase, jobs, time) measurements
         averaged_times = """SELECT phase, jobs, AVG(time) as avg_time
                             FROM phase_time
                             WHERE name=?
