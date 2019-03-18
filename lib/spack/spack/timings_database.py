@@ -5,6 +5,7 @@
 
 import sqlite3
 import llnl.util.tty as tty
+from multiprocessing import cpu_count
 
 
 class TimingsDatabase:
@@ -34,6 +35,9 @@ class TimingsDatabase:
         self._conn.close()
 
     def add_phase_time(self, package, phase, jobs, time_seconds):
+        if not jobs:
+            jobs = cpu_count()
+
         self._cur.execute('INSERT INTO phase_time VALUES (?,?,?,?)',
                           (package, phase, jobs, time_seconds))
         self._conn.commit()

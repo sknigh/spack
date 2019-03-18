@@ -1335,6 +1335,7 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                    explicit=False,
                    tests=False,
                    dirty=None,
+                   time_phases=False,
                    **kwargs):
         """Called by commands to install a package and its dependencies.
 
@@ -1364,6 +1365,7 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                 all packages, or a list of package names to run tests for some
             dirty (bool): Don't clean the build environment before installing.
             force (bool): Install again, even if already installed.
+            time_phases (bool): Emit phase execution times to a sqlite database.
         """
         if not self.spec.concrete:
             raise ValueError("Can only install concrete packages: %s."
@@ -1479,8 +1481,6 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                             self.spec.prefix, 'share', self.name, 'src')
                         tty_msg('Copying source to {0}'.format(src_target))
                         install_tree(self.stage.source_path, src_target)
-
-                    time_phases = kwargs.get('time_phases', False)
 
                     if time_phases:
                         td = TimingsDatabase()

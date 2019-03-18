@@ -639,14 +639,16 @@ class CPRDagScheduler(TwoStepSchedulerBase):
     def install_failed(self, spec):
 
         # Get all of the tasks that cannot execute
-        unreachable_tasks = [self.spec_to_task[t]
-                             for t in super().install_failed(spec)]
-        unreachable_tasks.append(self.spec_to_task[spec])
+        failed = list(super().install_failed(spec))
+        failed.append(spec)
 
-        # remove from task list
-        for t in unreachable_tasks:
+        # Remove tasks from schedule
+        for t in [self.spec_to_task[t] for t in failed]:
             self.tasks.remove(t)
             self.incomplete_task_end_times.remove(t.end_time)
+
+        # Return the list to the caller
+        return failed
 
     def pop_all_ready_specs(self):
         """ Generates a list of ready tasks
@@ -661,4 +663,4 @@ class CPRDagScheduler(TwoStepSchedulerBase):
             if t.start_time < earliest_end_time and t not in self._popped_tasks:
                 # ensure the task is only returned from this generator once
                 self._popped_tasks.add(t)
-                yield t
+                yield t.n, t.spec_node.spec

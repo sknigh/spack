@@ -42,6 +42,7 @@ def update_kwargs_from_args(args, kwargs):
         'fake': args.fake,
         'dirty': args.dirty,
         'use_cache': args.use_cache,
+        'time_phases': args.time_phases
     })
     if hasattr(args, 'setup'):
         setups = set()
@@ -91,6 +92,9 @@ the dependencies"""
     subparser.add_argument(
         '--source', action='store_true', dest='install_source',
         help="install source files in prefix")
+    subparser.add_argument(
+        '--time-phases', action='store_true',
+        help='Create a sqlite database with phase timing information')
     arguments.add_common_arguments(subparser, ['no_checksum'])
     subparser.add_argument(
         '-v', '--verbose', action='store_true',
