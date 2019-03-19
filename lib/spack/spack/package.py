@@ -23,6 +23,7 @@ import shutil
 import sys
 import textwrap
 import time
+from datetime import datetime
 from six import StringIO
 from six import string_types
 from six import with_metaclass
@@ -60,6 +61,7 @@ from spack.util.environment import dump_environment
 from spack.util.package_hash import package_hash
 from spack.version import Version
 from spack.package_prefs import get_package_dir_permissions, get_package_group
+from spack.timings_database import TimingsDatabase
 
 
 """Allowed URL schemes for spack packages."""
@@ -1514,6 +1516,11 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                         tty.msg('Copying source to {0}'.format(src_target))
                         install_tree(self.stage.source_path, src_target)
 
+                    time_phases = kwargs.get('time_phases', False)
+
+                    if time_phases:
+                        td = TimingsDatabase()
+
                     # Do the real install in the source directory.
                     with working_dir(self.stage.source_path):
                         # Save the build environment in a file before building.
@@ -1528,6 +1535,8 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                             for phase_name, phase_attr in zip(
                                     self.phases, self._InstallPhase_phases):
 
+                                if time_phases:
+                                    start = datetime.now()
                                 with logger.force_echo():
                                     inner_debug = tty.is_debug()
                                     tty.set_debug(debug_enabled)
@@ -1537,7 +1546,15 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
 
                                 # Redirect stdout and stderr to daemon pipe
                                 phase = getattr(self, phase_attr)
+
                                 phase(self.spec, self.prefix)
+
+                                if time_phases:
+                                    tot_time = (datetime.now() - start)
+                                    td.add_phase_time(self.name,
+                                                      phase_name,
+                                                      self.make_jobs,
+                                                      tot_time.total_seconds())
 
                     echo = logger.echo
                     self.log()
