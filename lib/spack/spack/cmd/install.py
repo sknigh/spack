@@ -200,13 +200,12 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
             env.install(abstract_spec, spec, **kwargs)
             env.write()
         else:
-            # TimingsDatabase('timings.sqlite3')
-            # scheduler = SimpleDagScheduler()
-            # scheduler.add_spec(spec.concretized())
-            # scheduler.prune_installed(verbose=True)
-            scheduler = schedule_selector([spec], timing_db=TimingsDatabase('timings.sqlite3'))
+            use_timings = kwargs['use_timings']
+            timings_db = TimingsDatabase(use_timings) if use_timings else None
+
+            scheduler = schedule_selector([spec], timing_db=timings_db)
             mpsi = MultiProcSpecInstaller()
-            mpsi.install_dag(scheduler)
+            mpsi.install_dag(scheduler, kwargs)
 
             # spec.package.do_install(**kwargs)
 
