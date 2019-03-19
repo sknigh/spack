@@ -247,6 +247,9 @@ class DagSchedulerBase:
         for spec in self._dag_manager.install_failed(spec):
             yield spec
 
+    def schedule_is_built(self):
+        return self._build_schedule_called_already
+
     def _build_schedule_called(self):
         """Ensure build_schedule is only called once"""
         if not self._build_schedule_called_already:
@@ -347,9 +350,10 @@ class TwoStepSchedulerBase(DagSchedulerBase):
             # will run when scheduling across multiple nodes
             self.exec_node_id = None
 
-            tty.warn('Creating task for %s' % self.spec_node.spec.name)
-            for i in [1, 2, 4, 8]:
-                tty.warn(' %s: %s' % (i, round(self._estimator.estimate(i), 2)))
+            # tty.warn('Creating task for %s' % self.spec_node.spec.name)
+            # for i in [1, 2, 4, 8]:
+            #     tty.warn(' %s: %s' % (
+            #     i, round(self._estimator.estimate(i), 2)))
 
         @staticmethod
         def _init_estimator(spec_name, timings_database):
@@ -399,6 +403,13 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
             return self._t_level
 
+        def work_change(self):
+            """Returns the improvement in execution time by increasing
+            processor count divided by number of processors used"""
+            initial = self.exec_time() / self.n
+            final = self.exec_time(self.n + 1) / (self.n + 1)
+            return initial - final
+
         # TODO: consider removing. It is more efficient to
         #  update b/t-levels in one batch
         def set_procs(self, nproc):
@@ -421,6 +432,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
     def __init__(self, dag_manager, timings_database):
         super().__init__(dag_manager)
         self.timings_database = timings_database
+        self.tasks = []
 
     @staticmethod
     def calculate_levels(tasks):
@@ -472,10 +484,9 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         """A subset of tasks whose dependencies are scheduled"""
         return [t for t in tasks if t.unsched_deps == 0]
 
-    @staticmethod
-    def get_makespan(tasks):
+    def get_makespan(self):
         """Makespan is determined by the longest end time"""
-        return max([t.end_time for t in tasks])
+        return max([t.end_time for t in self.tasks])
 
     @staticmethod
     def schedule_task(t, proc_idle_time, p_list, start_time):
@@ -523,20 +534,43 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
         return crit_tasks
 
-    @staticmethod
-    def print_schedule(tasks):
+    def print_schedule(self):
         tty.msg('Task schedule')
 
-        name_len = max(len(t.spec_node.spec.name) for t in tasks)
-        fmt_str = '%-LENs %-3s %-5s %-5s'.replace('LEN', str(name_len))
+        name_len = max(len(t.spec_node.spec.name) for t in self.tasks)
+        fmt_str = '%-LENs %-3s %-8s %-5s %-5s'.replace('LEN', str(name_len))
 
-        tty.msg(fmt_str % ('Name', 'Jobs', 'Start', 'End'))
-        for t in sorted(tasks, key=lambda task: task.start_time):
+        tty.msg(fmt_str % ('Name', 'Jobs', 'blevel', 'Start', 'End'))
+        for t in sorted(self.tasks, key=lambda task: task.start_time):
             tty.msg(fmt_str % (
                 t.spec_node.spec.name,
                 t.n,
-                round(t.start_time, 2),
-                round(t.end_time, 2)))
+                round(t.b_level(), 1),
+                round(t.start_time, 1),
+                round(t.end_time, 1)))
+
+        tty.msg('')
+        tty.msg('Estimated execution time: %s' %
+                round(self.get_makespan(), 2))
+
+    def _build_task_list(self):
+        """Translates the spec tree defined in the parent into a task list
+        usable for this algorithm"""
+
+        # Create the tasks
+        self.tasks = [self.Task(self.timings_database, nd)
+                      for nd in self._dag_manager.tree.values()]
+
+        # lazy way O(V^2E)
+        for t in self.tasks:
+            for dep in t.spec_node.dependencies:
+                for candidate_dep in self.tasks:
+                    if dep.full_hash() == candidate_dep.spec_node.hash:
+                        self.Task.link_tasks(t, candidate_dep)
+                        #print('%s -> %s' % (
+                        #    t.spec_node.spec.name,
+                        #    candidate_dep.spec_node.spec.name))
+                        break
 
     def mls(self, t_list, nproc):
         """M-task list scheduler
@@ -576,6 +610,10 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
         return list(scheduled)
 
+    def serial_estimate(self):
+        """Gets expected execution time if the tasks were run in serial"""
+        return sum(t.exec_time(get_cpu_count()) for t in self.tasks)
+
 
 class CPRDagScheduler(TwoStepSchedulerBase):
     """Critical Path Reduction scheduler.
@@ -593,7 +631,6 @@ class CPRDagScheduler(TwoStepSchedulerBase):
 
     def __init__(self, timings_database, dag_manager=None):
         super().__init__(dag_manager, timings_database)
-        self.tasks = []
 
         # A list task end times for tasks that have not yet completed. Used
         # for selecting the next task to schedule
@@ -603,42 +640,6 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         self.spec_to_task = {}
 
         self._popped_tasks = set()
-
-    def _build_task_list(self):
-        """Translates the spec tree defined in the parent into a task list
-        usable for this algorithm"""
-
-        self.tasks = []
-
-        # DFS traversal starting with the top-level dependency
-        nds = [n for n in self._dag_manager.tree.values()
-               if len(n.dependents) == 0]
-
-        # the DAG can be multi-rooted, so avoid
-        # visiting the same dependency twice
-        visited = set(n.hash for n in nds)
-
-        while len(nds) > 0:
-            nd = nds.pop(0)
-            for s in nd.dependencies:
-                if s.full_hash() not in visited:
-                    nds.append(self._dag_manager.tree[s.full_hash()])
-                    visited.add(s.full_hash())
-
-            # Create the task
-            t = self.Task(self.timings_database, nd)
-
-            # Make edges between tasks according to Spec's dependencies
-            for dpt in nd.dependents:
-                # This is a BF traversal, so the parent
-                # must have been added recently
-                for task in reversed(self.tasks):
-                    if task.spec_node.hash == dpt:
-                        self.Task.link_tasks(task, t)
-                        break
-
-            # Add task to the list
-            self.tasks.append(t)
 
     def build_schedule(self, print_time=False):
 
@@ -653,7 +654,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         self.calculate_levels(self.tasks)
 
         nproc = get_cpu_count()
-        sched = self.mls(self.tasks, nproc)
+        self.mls(self.tasks, nproc)
 
         # Keep looping until a better schedule can't be created
         sched_modified = True
@@ -664,18 +665,19 @@ class CPRDagScheduler(TwoStepSchedulerBase):
             while not sched_modified and len(resizable_tasks) > 0:
                 # select a task on the critical path
                 # and increase its processor allocation
-                # ct = self.critical_tasks(resizable_tasks)[0]
+                #ct = self.critical_tasks(resizable_tasks)[0]
+                #print([t.criticality for t in self.critical_tasks(resizable_tasks)])
                 ct = max(self.critical_tasks(resizable_tasks),
-                         key=lambda t: t._b_level)
-                old_makespan = self.get_makespan(sched)
+                         key=lambda tt: tt._t_level)
+                old_makespan = self.get_makespan()
                 ct.set_procs(ct.n + 1)
                 self.calculate_levels(self.tasks)
 
                 # create a new schedule
-                sched = self.mls(self.tasks, nproc)
+                self.mls(self.tasks, nproc)
 
                 # if the makespan decreased, use the new schedule
-                new_makespan = self.get_makespan(sched)
+                new_makespan = self.get_makespan()
                 if new_makespan < old_makespan:
                     sched_modified = True
                 else:
@@ -684,13 +686,10 @@ class CPRDagScheduler(TwoStepSchedulerBase):
                     ct.set_procs(ct.n - 1)
                     self.calculate_levels(self.tasks)
                     resizable_tasks.remove(ct)
-                    sched = self.mls(self.tasks, nproc)
+                    self.mls(self.tasks, nproc)
 
         self.incomplete_task_end_times = sorted(t.end_time for t in self.tasks)
         self.spec_to_task = {t.spec_node.spec: t for t in self.tasks}
-
-        self.print_schedule(self.tasks)
-        exit()
 
     def install_successful(self, spec):
         task = self.spec_to_task[spec]
@@ -731,9 +730,152 @@ class CPRDagScheduler(TwoStepSchedulerBase):
                 yield t.n, t.spec_node.spec
 
 
-def schedule_selector(specs,
-                      timing_db=None,
-                      preferred_scheduler=None):
+class MCPADagScheduler(TwoStepSchedulerBase):
+    """Modified Critical Path and Allocation scheduler.
+    MCPA is a two step scheduler that iteratively to allocates more cores
+    to critical tasks that maximize the reduction to work area.
+
+    Where:
+    P is the number of cores
+    V is the number of specs
+    E is the number of dependencies between specs
+    """
+
+    def __init__(self, timings_database, dag_manager=None):
+        super().__init__(dag_manager, timings_database)
+
+        # A list task end times for tasks that have not yet completed. Used
+        # for selecting the next task to schedule
+        self.incomplete_task_end_times = []
+
+        # spec -> task lookup table
+        self.spec_to_task = {}
+
+        self._popped_tasks = set()
+
+    def init_precedence_levels(self):
+        """Configures precedence level, an integer identifier for each task
+        that spans the graph. Used by MCPA to configure processor allotments.
+        Returns the count of processors already allocated at each level"""
+
+        # O(V + VE)
+        previous_layer = [t for t in self.tasks if t.is_exit()]
+        next_layer = []
+        prec = 0
+        p_level_procs = []
+
+        while len(previous_layer) > 0:
+            p_sum = 0
+            for t in previous_layer:
+                t.precedence_level = prec
+                next_layer.extend(t.dependencies)
+                p_sum += t.n
+
+            p_level_procs.append(p_sum)
+            previous_layer = next_layer
+            next_layer = []
+            prec += 1
+
+        return p_level_procs
+
+    def compute_area(self, tot_procs):
+        """Calculates the computing area, which is the total computed area"""
+        return sum(t.exec_time() * t.n for t in self.tasks) / tot_procs
+
+    def build_schedule(self, print_time=False):
+
+        self._build_schedule_called()
+
+        # Initializing tasks and schedule
+        self._build_task_list()
+
+        for t in self.tasks:
+            t.set_procs(1)
+            t.visited = False
+
+        P = get_cpu_count()
+
+        num_prec_levels = len(self.init_precedence_levels())
+        self.calculate_levels(self.tasks)
+
+        # Used to calculate precedence level
+        visited = set()
+
+        i = 0
+        # continue while Critical path exceeds average compute area
+        while (max(t.b_level() for t in self.tasks) >
+               self.compute_area(P)):
+
+            # list of tasks on the critical path that can allocate more cores
+            crit_tasks = [t for t in self.critical_tasks(self.tasks) if t.n < P]
+
+            # calculate precedence levels, but only on visited tasks
+            prec_levels = [0] * num_prec_levels
+            for t in visited:
+                prec_levels[t.precedence_level] += t.n
+
+            for t in crit_tasks:
+                prec_levels[t.precedence_level] += t.n
+
+            # select the task with the greatest improvement
+            opt_task = max(
+                (t for t in crit_tasks if prec_levels[t.precedence_level] < P),
+                key=lambda x: x.work_change(), default=None)
+
+            if not opt_task:
+                # print('Warn: No improvement found at iteration', i)
+                break
+            i += 1
+
+            # Update the task, precedence/b/t-levels, and visited set
+            opt_task.n += 1
+            self.calculate_levels(self.tasks)
+            visited.add(opt_task)
+
+        self.mls(self.tasks, P)
+        self.incomplete_task_end_times = sorted(t.end_time for t in self.tasks)
+        self.spec_to_task = {t.spec_node.spec: t for t in self.tasks}
+
+    def install_successful(self, spec):
+        task = self.spec_to_task[spec]
+
+        # propagate to the base class
+        self._dag_manager.install_successful(spec)
+
+        # remove end time from the list
+        self.incomplete_task_end_times.remove(task.end_time)
+
+    def install_failed(self, spec):
+
+        # Get all of the tasks that cannot execute
+        failed = list(super().install_failed(spec))
+        failed.append(spec)
+
+        # Remove tasks from schedule
+        for t in [self.spec_to_task[t] for t in failed]:
+            self.tasks.remove(t)
+            self.incomplete_task_end_times.remove(t.end_time)
+
+        # Return the list to the caller
+        return failed
+
+    def pop_ready_specs(self):
+        """ Generates a list of ready tasks
+
+        The schedule is generated with concrete start and end times. A task may
+        begin when all tasks with an end time earlier than its start time have
+        completed"""
+
+        earliest_end_time = min(self.incomplete_task_end_times,
+                                default=float('inf'))
+        for t in self.tasks:
+            if t.start_time < earliest_end_time and t not in self._popped_tasks:
+                # ensure the task is only returned from this generator once
+                self._popped_tasks.add(t)
+                yield t.n, t.spec_node.spec
+
+
+def schedule_selector(specs, timing_db=None, preferred_scheduler=None):
     """Selects and initializes the best scheduler from the provided
     information"""
 
@@ -747,9 +889,41 @@ def schedule_selector(specs,
         tty.msg('Selected SimpleDagScheduler')
         return SimpleDagScheduler(dag_manager=dm)
 
-    # Large DAGs should use MCPA because CPR gets too slow
-    # if dm.count() > 150:
-    #     return MCPADagScheduler()
+    mcpa_sched = MCPADagScheduler(timing_db, dag_manager=dm)
+    mcpa_sched.build_schedule()
 
-    tty.msg('Selected CPRDagScheduler')
-    return CPRDagScheduler(timing_db, dag_manager=dm)
+    # CPR is costly, do not use when there too many Specs
+    if dm.count() > 150:
+        tty.msg('Selected MCPADagScheduler')
+        return mcpa_sched
+
+    cpr_sched = CPRDagScheduler(timing_db, dag_manager=dm)
+    cpr_sched.build_schedule()
+
+    mcpa_makespan = mcpa_sched.get_makespan()
+    cpr_makespan = cpr_sched.get_makespan()
+
+    tty.msg('MCPA makespan:   %ss' % round(mcpa_makespan, 1))
+    tty.msg('CPR  makespan:   %ss' % round(cpr_makespan, 1))
+    tty.msg('Serial makespan: %ss' % round(mcpa_sched.serial_estimate(), 1))
+
+    mcpa_sched.print_schedule()
+
+    # When the user has explicitly requested a scheduler
+    if preferred_scheduler == 'CPRDagScheduler':
+        tty.msg('Selected CPRDagScheduler')
+        return cpr_sched
+    elif preferred_scheduler == 'MCPADagScheduler':
+        tty.msg('Selected MCPADagScheduler')
+        return mcpa_sched
+
+    # select the schedule with the shortest makespan
+    if cpr_makespan < mcpa_makespan or preferred_scheduler == 'CPRDagScheduler':
+        tty.msg('Selected CPRDagScheduler')
+        return cpr_sched
+    if mcpa_sched.serial_estimate() < mcpa_makespan:
+        tty.msg('Selected SimpleDagScheduler')
+        return SimpleDagScheduler(dag_manager=dm)
+    else:
+        tty.msg('Selected MCPADagScheduler')
+        return mcpa_sched
