@@ -295,7 +295,7 @@ class SimpleDagScheduler(DagSchedulerBase):
 
         spec = self._ready_to_install.pop()
         self._outstanding_spec = spec
-        return [(self.make_jobs, spec)]
+        return [(None, spec)]
 
     def install_successful(self, spec):
         if spec.full_hash() != self._outstanding_spec.full_hash():
