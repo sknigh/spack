@@ -211,7 +211,6 @@ class DagManager:
                         self.tree[cur_hash] = s
                         unresolved_specs.extend(
                             [(s, dep) for dep in s.dependencies])
-                        print('Processed %s' % cur_spec.name)
 
                     # Add a dependent when a parent is defined
                     if parent is not None:
@@ -715,6 +714,7 @@ def schedule_selector(specs,
     dm = DagManager()
     dm.add_specs(specs, 2)
     dm.prune_installed()
+    tty.msg('Created DAG with %s Specs' % dm.count())
 
     if not timing_db or preferred_scheduler == 'SimpleDagScheduler':
         # No timing information prevents sophisticated scheduling

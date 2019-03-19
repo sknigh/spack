@@ -1381,6 +1381,7 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
             use_cache (bool): Install from binary package, if available.
             stop_at (InstallPhase): last installation phase to be executed
                 (or None)
+            time_phases (bool): Emit phase execution times to a sqlite database.
         """
         if not self.spec.concrete:
             raise ValueError("Can only install concrete packages: %s."
@@ -1398,6 +1399,7 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
         tests = kwargs.get('tests', False)
         dirty = kwargs.get('dirty', False)
         restage = kwargs.get('restage', False)
+        time_phases = kwargs.get('time_phases', False)
 
         # For external packages the workflow is simplified, and basically
         # consists in module file generation and registration in the DB
@@ -1504,8 +1506,6 @@ class PackageBase(with_metaclass(PackageMeta, PackageViewMixin, object)):
                             self.spec.prefix, 'share', self.name, 'src')
                         tty.msg('Copying source to {0}'.format(src_target))
                         install_tree(self.stage.source_path, src_target)
-
-                    time_phases = kwargs.get('time_phases', False)
 
                     if time_phases:
                         td = TimingsDatabase()
