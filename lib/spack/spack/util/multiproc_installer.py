@@ -20,7 +20,9 @@ def install_from_queue(work_queue, installation_result_queue, kwargs):
             jobs, serialized_spec = work_queue.get(block=True)
             spec = Spec.from_yaml(serialized_spec).concretized()
 
-            kwargs['make_jobs'] = jobs
+            if jobs:
+                kwargs['make_jobs'] = jobs
+
             kwargs['install_deps'] = False
 
             tty.msg(
