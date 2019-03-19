@@ -249,11 +249,15 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
             env.write()
         else:
             use_timings = kwargs['use_timings']
+            preferred_scheduler = kwargs['scheduler']
             timings_db = TimingsDatabase(use_timings) if use_timings else None
 
-            scheduler = schedule_selector([spec], timing_db=timings_db)
-            mpsi = MultiProcSpecInstaller()
-            mpsi.install_dag(scheduler, kwargs)
+            scheduler = schedule_selector(
+                [spec],
+                timing_db=timings_db,
+                preferred_scheduler=preferred_scheduler)
+
+            MultiProcSpecInstaller().install_dag(scheduler, kwargs)
 
             # spec.package.do_install(**kwargs)
 

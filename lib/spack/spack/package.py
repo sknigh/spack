@@ -2743,8 +2743,10 @@ def possible_dependencies(*pkg_or_spec, **kwargs):
 def print_pkg(message):
     """Outputs a message with a package icon."""
     from llnl.util.tty.color import cwrite
-    cwrite('@*g{[+]} ')
-    print(message)
+
+    if tty.msg_enabled():
+        cwrite('@*g{[+]} ')
+        print(message)
 
 
 def _hms(seconds):
