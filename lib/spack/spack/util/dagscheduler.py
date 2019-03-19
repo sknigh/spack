@@ -186,7 +186,7 @@ class DagManager:
     def ready_specs(self):
         """Returns a list of specs that have no dependencies and are ready to
         install"""
-        return {node.spec for _, node in self.tree.items()
+        return {node.spec for node in self.tree.values()
                 if not len(node.dependencies)}
 
     def count(self):
@@ -270,6 +270,10 @@ class DagSchedulerBase:
     def count(self):
         return self._dag_manager.count()
 
+    def get_makespan(self):
+        """Gets the makespan"""
+        raise NotImplementedError()
+
 
 class SimpleDagScheduler(DagSchedulerBase):
     """Implements a Dag Scheduler
@@ -286,6 +290,10 @@ class SimpleDagScheduler(DagSchedulerBase):
         self._build_schedule_called()
         self.prune_installed()
         self._ready_to_install = set(self._dag_manager.ready_specs())
+
+    def install_failed(self, spec):
+        self._outstanding_spec = None
+        return super().install_failed(spec)
 
     def pop_ready_specs(self):
         # This DAG Scheduler builds one spec at a time with all cores
@@ -515,6 +523,21 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
         return crit_tasks
 
+    @staticmethod
+    def print_schedule(tasks):
+        tty.msg('Task schedule')
+
+        name_len = max(len(t.spec_node.spec.name) for t in tasks)
+        fmt_str = '%-LENs %-3s %-5s %-5s'.replace('LEN', str(name_len))
+
+        tty.msg(fmt_str % ('Name', 'Jobs', 'Start', 'End'))
+        for t in sorted(tasks, key=lambda task: task.start_time):
+            tty.msg(fmt_str % (
+                t.spec_node.spec.name,
+                t.n,
+                round(t.start_time, 2),
+                round(t.end_time, 2)))
+
     def mls(self, t_list, nproc):
         """M-task list scheduler
         Creates a schedule from a set of tasks which have been assigned cores.
@@ -665,6 +688,9 @@ class CPRDagScheduler(TwoStepSchedulerBase):
 
         self.incomplete_task_end_times = sorted(t.end_time for t in self.tasks)
         self.spec_to_task = {t.spec_node.spec: t for t in self.tasks}
+
+        self.print_schedule(self.tasks)
+        exit()
 
     def install_successful(self, spec):
         task = self.spec_to_task[spec]
