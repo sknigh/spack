@@ -23,22 +23,20 @@ def install_from_queue(work_queue, installation_result_queue, kwargs):
             if jobs:
                 kwargs['make_jobs'] = jobs
 
+            if kwargs['make_jobs'] is None:
+                kwargs['make_jobs'] = get_cpu_count()
+
             kwargs['install_deps'] = False
 
             tty.msg(
-                '(%s) Parallel job installing %s with %s jobs' % (os.getpid(),
-                                                                  spec.name,
-                                                                  jobs))
+                'Installing %s with %s jobs' % (spec.name, kwargs['make_jobs']))
             with tty.SuppressOutput(msg_enabled=False,
                                     warn_enabled=False,
                                     error_enabled=False):
                     spec.package.do_install(**kwargs)
 
             installation_result_queue.put_nowait((None, serialized_spec))
-            #tty.msg(
-            #    '(%s) Parallel job installed %s' % (os.getpid(), spec.name))
         except Exception as e:
-            tty.error('Package build error!')
             tty.error(e)
             traceback.print_exc()
             installation_result_queue.put_nowait(('ERROR', serialized_spec))
@@ -115,27 +113,25 @@ class MultiProcSpecInstaller(SpecInstaller):
 
                     spec = Spec.from_yaml(serialized_spec)
 
-                    if res is None:
-                        dag_scheduler.install_successful(spec)
-
-                        # Greedily get all ready specs
-                        for j_s in dag_scheduler.pop_ready_specs():
-                            ready_specs.add(j_s)
-                        #else:
-                        #    print(spec, 'has no new dependents')
-
-                        outstanding_installs.pop(spec.full_hash())
-                        tty.msg('%s Installed %s' % (get_prompt(), spec.name))
-                    else:
-                        removed_specs = dag_scheduler.install_failed(spec)
-                        outstanding_installs.pop(spec.full_hash())
+                    # Message indicates an error
+                    if res:
+                        removed_specs = list(dag_scheduler.install_failed(spec))
+                        #outstanding_installs.pop(spec.full_hash())
                         rm_specs_str = '\n\t'.join(
                                         s.name for s in sorted(removed_specs))
-                        tty.error('%s Installation of "%s" failed. Skipping %d'
+                        tty.error('Installation of "%s" failed. Skipping %d'
                                   ' dependent packages: \n\t%s' %
-                                  (get_prompt(), spec.name, len(removed_specs),
-                                   rm_specs_str
-                                   ))
+                                  (spec.name, len(removed_specs), rm_specs_str))
+                    else:
+                        dag_scheduler.install_successful(spec)
+                        tty.msg('Installed %s' % spec.name)
+
+                    # Greedily get all ready specs
+                    for j_s in dag_scheduler.pop_ready_specs():
+                        ready_specs.add(j_s)
+
+                    outstanding_installs.pop(spec.full_hash())
+
         except Exception as e:
             import traceback
             tty.error("Installation pool error, %s\n" % (str(e)))
