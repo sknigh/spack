@@ -82,21 +82,12 @@ class MultiProcSpecInstaller(SpecInstaller):
                                       kwargs))
 
                 # Initialize spec structures
-                dag_scheduler.build_schedule()
+                if not dag_scheduler.schedule_is_built():
+                    dag_scheduler.build_schedule()
                 ready_specs = set(dag_scheduler.pop_ready_specs())
 
-                def get_prompt():
-                    res_qsize = installation_result_queue.qsize()
-                    work_qsize = work_queue.qsize()
-                    outstanding = len(outstanding_installs)
-                    ready = len(ready_specs)
-                    return self._progress_prompt_str(
-                        outstanding - work_qsize - res_qsize,
-                        ready + work_qsize,
-                        dag_scheduler.count())
-
-                tty.msg(self._progress_prompt_str(
-                    'Installing', 'Ready', 'Unscheduled'))
+                # tty.msg(self._progress_prompt_str(
+                #     'Installing', 'Ready', 'Unscheduled'))
 
                 while len(ready_specs) > 0 or len(outstanding_installs) > 0:
                     for jobs, spec in ready_specs:
@@ -116,7 +107,6 @@ class MultiProcSpecInstaller(SpecInstaller):
                     # Message indicates an error
                     if res:
                         removed_specs = list(dag_scheduler.install_failed(spec))
-                        #outstanding_installs.pop(spec.full_hash())
                         rm_specs_str = '\n\t'.join(
                                         s.name for s in sorted(removed_specs))
                         tty.error('Installation of "%s" failed. Skipping %d'
