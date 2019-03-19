@@ -14,22 +14,27 @@ def get_cpu_count():
     return int(cpu_count()/2)
 
 
-def install_from_queue(work_queue, installation_result_queue):
+def install_from_queue(work_queue, installation_result_queue, kwargs):
     while True:
         try:
             jobs, serialized_spec = work_queue.get(block=True)
             spec = Spec.from_yaml(serialized_spec).concretized()
 
+            kwargs['make_jobs'] = jobs
+            kwargs['install_deps'] = False
+
             tty.msg(
-                '(%s) Parallel job installing %s with %s jobs' % (os.getpid(), spec.name, jobs))
-            with tty.SuppressOutput(msg_enabled=True,
+                '(%s) Parallel job installing %s with %s jobs' % (os.getpid(),
+                                                                  spec.name,
+                                                                  jobs))
+            with tty.SuppressOutput(msg_enabled=False,
                                     warn_enabled=False,
                                     error_enabled=False):
-                    spec.package.do_install(make_jobs=jobs, install_deps=False)
+                    spec.package.do_install(**kwargs)
 
             installation_result_queue.put_nowait((None, serialized_spec))
-            tty.msg(
-                '(%s) Parallel job installed %s' % (os.getpid(), spec.name))
+            #tty.msg(
+            #    '(%s) Parallel job installed %s' % (os.getpid(), spec.name))
         except Exception as e:
             tty.error('Package build error!')
             tty.error(e)
@@ -40,7 +45,7 @@ def install_from_queue(work_queue, installation_result_queue):
 class SpecInstaller:
     """Interface for installing specs"""
 
-    def install_dag(self, dag_scheduler):
+    def install_dag(self, dag_scheduler, *kwargs):
         raise NotImplementedError()
 
     @staticmethod
@@ -55,7 +60,7 @@ class MultiProcSpecInstaller(SpecInstaller):
     def __init__(self):
         pass
 
-    def install_dag(self, dag_scheduler):
+    def install_dag(self, dag_scheduler, kwargs):
         """Installs a list of specs"""
 
         start_time = time.time()
@@ -72,7 +77,9 @@ class MultiProcSpecInstaller(SpecInstaller):
                 # queue for sending specs/receiving results
                 for _ in range(get_cpu_count()):
                     pool.apply_async(install_from_queue,
-                                     (work_queue, installation_result_queue))
+                                     (work_queue,
+                                      installation_result_queue,
+                                      kwargs))
 
                 # Initialize spec structures
                 dag_scheduler.build_schedule()
