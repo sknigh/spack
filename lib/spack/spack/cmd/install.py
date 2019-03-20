@@ -209,9 +209,18 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
                 timing_db=timings_db,
                 preferred_scheduler=preferred_scheduler)
 
-            #scheduler.build_schedule()
-            #print([t.name for t in TwoStepSchedulerBase.Task.phase_task_dag(scheduler.tasks,
-            #                                               timings_db)])
+            # phase_dag = TwoStepSchedulerBase.Task.phase_task_dag(
+            #     scheduler.tasks,
+            #     timings_db)
+            #
+            # for task in phase_dag:
+            #     for dep in task.dependencies:
+            #         print('%s -> %s' % (task.name, dep.name))
+            #
+            # print(len(phase_dag))
+            #TwoStepSchedulerBase.calculate_levels(phase_dag)
+            #print(TwoStepSchedulerBase.critical_tasks(phase_dag))
+
             #exit()
 
             MultiProcSpecInstaller().install_dag(scheduler, kwargs)
