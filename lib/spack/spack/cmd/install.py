@@ -258,9 +258,9 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
                 preferred_scheduler=preferred_scheduler)
 
             #scheduler.build_schedule()
-            print([t.name for t in TwoStepSchedulerBase.Task.phase_task_dag(scheduler.tasks,
-                                                           timings_db)])
-            exit()
+            #print([t.name for t in TwoStepSchedulerBase.Task.phase_task_dag(scheduler.tasks,
+            #                                               timings_db)])
+            #exit()
 
             MultiProcSpecInstaller().install_dag(scheduler, kwargs)
 
