@@ -349,11 +349,70 @@ class TwoStepSchedulerBase(DagSchedulerBase):
             # Identifies which compute node the task
             # will run when scheduling across multiple nodes
             self.exec_node_id = None
+            self.name = spec_node.spec.name
 
             # tty.warn('Creating task for %s' % self.spec_node.spec.name)
             # for i in [1, 2, 4, 8]:
             #     tty.warn(' %s: %s' % (
             #     i, round(self._estimator.estimate(i), 2)))
+
+        def phase_decomposition(self, timings_database):
+            """Decomposes task into its phases
+            NOTE: used for theoretical DAG schedules, phase tasks will not
+            actually work in a real installation"""
+
+            package = self.spec_node.spec.name
+            phase_list = []
+            last_task = None
+            for phase in list(timings_database.phases_gen(package)):
+                timing_tups = list(timings_database.phase_timings(package, phase))
+                est = AsymptoticTimeEstimator()
+                est.add_measurements(*zip(*timing_tups))
+
+                t = deepcopy(self)
+                t._estimator = est
+                t.name = '%s::%s' % (t.name, phase)
+
+                t.dependents = []
+                t.dependencies = []
+                if last_task is not None:
+                    self.Task.link_tasks(last_task, t)
+                phase_list.append(t)
+
+            return phase_list
+
+        @staticmethod
+        def phase_task_dag(task_list, timings_databse):
+            """Creates a DAG with phase tasks from a DAG with package tasks"""
+
+            visited = {}
+            tasks = [t for t in task_list if len(t.dependents) == 0]
+
+            def process_package_task(t):
+                if t in visited:
+                    return visited[t]
+
+                p_list = t.phase_decomposition(timings_databse)
+                visited[t] = p_list
+                tasks.extend(t.dependencies)
+
+                for dep in t.dependents:
+                    # recurse on dependents that have not been processed
+                    dep_lst = visited[dep] if \
+                        dep in visited else process_package_task(dep)
+
+                    TwoStepSchedulerBase.Task.link_tasks(p_list[-1],
+                                                         dep_lst[0])
+                return p_list
+
+            while len(tasks) > 0:
+                t = tasks.pop(0)
+
+                if t not in visited:
+                    process_package_task(t)
+
+            # The dictionary values still partition by package task. Flatten it
+            return [idx for pt in visited.values() for idx in pt]
 
         @staticmethod
         def _init_estimator(spec_name, timings_database):
