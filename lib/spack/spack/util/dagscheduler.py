@@ -376,7 +376,8 @@ class TwoStepSchedulerBase(DagSchedulerBase):
                 t.dependents = []
                 t.dependencies = []
                 if last_task is not None:
-                    self.Task.link_tasks(last_task, t)
+                    self.link_tasks(t, last_task)
+                last_task = t
                 phase_list.append(t)
 
             return phase_list
@@ -393,6 +394,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
                     return visited[t]
 
                 p_list = t.phase_decomposition(timings_databse)
+
                 visited[t] = p_list
                 tasks.extend(t.dependencies)
 
@@ -401,8 +403,8 @@ class TwoStepSchedulerBase(DagSchedulerBase):
                     dep_lst = visited[dep] if \
                         dep in visited else process_package_task(dep)
 
-                    TwoStepSchedulerBase.Task.link_tasks(p_list[-1],
-                                                         dep_lst[0])
+                    TwoStepSchedulerBase.Task.link_tasks(dep_lst[0],
+                                                         p_list[-1])
                 return p_list
 
             while len(tasks) > 0:
