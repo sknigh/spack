@@ -70,15 +70,15 @@ class TimingsDatabase:
     #     for c in self._cur.execute(query):
     #         yield c
 
-    # def phases_gen(self, package):
-    #     """Returns phases for a package"""
-    #
-    #     query = """SELECT DISTINCT phase
-    #                FROM phase_time
-    #                WHERE name=?"""
-    #
-    #     for c in self._cur.execute(query, (package,)):
-    #         yield c
+    def phases_gen(self, package):
+        """Returns phases for a package"""
+
+        query = """SELECT DISTINCT phase
+                   FROM phase_time
+                   WHERE name=?"""
+
+        for c, in self._cur.execute(query, (package,)):
+            yield c
 
     # def packages_gen(self):
     #     """Returns timed packages"""
@@ -88,6 +88,23 @@ class TimingsDatabase:
     #
     #     for c in self._cur.execute(query):
     #         yield c
+
+    def phase_timings(self, package, phase):
+        """Returns tuples of (jobs, total execution) time for phase"""
+
+        # Average duplicate (phase, jobs, time) measurements
+        averaged_times = """SELECT phase, jobs, AVG(time) as avg_time
+                            FROM phase_time
+                            WHERE name=? AND phase=?
+                            GROUP BY phase, jobs"""
+
+        # Sum every phase for a package to get total execution time
+        query = """SELECT jobs, avg_time
+                   FROM (%s)
+                   GROUP BY jobs""" % averaged_times
+
+        for c in self._cur.execute(query, (package, phase)):
+            yield c
 
     def package_timings(self, package):
         """Returns tuples of (jobs, total execution) time for a package"""

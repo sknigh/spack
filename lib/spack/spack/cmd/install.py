@@ -18,7 +18,7 @@ import spack.environment as ev
 import spack.fetch_strategy
 import spack.paths
 import spack.report
-from spack.util.dagscheduler import schedule_selector
+from spack.util.dagscheduler import schedule_selector, TwoStepSchedulerBase
 from spack.util.multiproc_installer import MultiProcSpecInstaller
 from spack.timings_database import TimingsDatabase
 from spack.error import SpackError
@@ -208,6 +208,11 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
                 [spec],
                 timing_db=timings_db,
                 preferred_scheduler=preferred_scheduler)
+
+            #scheduler.build_schedule()
+            print([t.name for t in TwoStepSchedulerBase.Task.phase_task_dag(scheduler.tasks,
+                                                           timings_db)])
+            exit()
 
             MultiProcSpecInstaller().install_dag(scheduler, kwargs)
 
