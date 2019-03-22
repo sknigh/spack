@@ -1,4 +1,5 @@
 import numpy as np
+from llnl.util.lang import memoized
 
 
 class InstallTimeEstimatorBase:
@@ -46,6 +47,8 @@ class AsymptoticTimeEstimator(InstallTimeEstimatorBase):
         self._estimate = np.poly1d(
             np.polyfit(1/self._jobs, self._times, deg=1))
 
+    # poly1d is quite slow
+    @memoized
     def estimate(self, jobs):
         """Estimate installation time for a given number of make jobs"""
         if not self._estimate:
