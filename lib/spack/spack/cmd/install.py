@@ -18,10 +18,11 @@ import spack.environment as ev
 import spack.fetch_strategy
 import spack.paths
 import spack.report
-from spack.util.dagscheduler import schedule_selector, TwoStepSchedulerBase
+from spack.util.dagscheduler import schedule_selector, TwoStepSchedulerBase, compare_schedules
 from spack.util.multiproc_installer import MultiProcSpecInstaller
 from spack.timings_database import TimingsDatabase
 from spack.error import SpackError
+from spack.spec import Spec
 
 
 description = "build and install packages"
@@ -204,26 +205,20 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
             preferred_scheduler = kwargs['scheduler']
             timings_db = TimingsDatabase(use_timings) if use_timings else None
 
-            scheduler = schedule_selector(
-                [spec],
-                timing_db=timings_db,
-                preferred_scheduler=preferred_scheduler)
+            for ss in [Spec('python'),
+                      Spec('tk'),
+                      Spec('r'),
+                      Spec('xsdk')]:
+                #for ss in [Spec('python'), Spec('tk')]:
+                cpr, mcpa = compare_schedules(ss, timings_db, True, 32)
+                # scheduler = schedule_selector(
+                #     [s],
+                #     timing_db=timings_db,
+                #     preferred_scheduler=preferred_scheduler)
 
-            # phase_dag = TwoStepSchedulerBase.Task.phase_task_dag(
-            #     scheduler.tasks,
-            #     timings_db)
-            #
-            # for task in phase_dag:
-            #     for dep in task.dependencies:
-            #         print('%s -> %s' % (task.name, dep.name))
-            #
-            # print(len(phase_dag))
-            #TwoStepSchedulerBase.calculate_levels(phase_dag)
-            #print(TwoStepSchedulerBase.critical_tasks(phase_dag))
+            exit()
 
-            #exit()
-
-            MultiProcSpecInstaller().install_dag(scheduler, kwargs)
+            #MultiProcSpecInstaller().install_dag(scheduler, kwargs)
 
             # spec.package.do_install(**kwargs)
 
