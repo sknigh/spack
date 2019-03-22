@@ -735,7 +735,8 @@ class CPRDagScheduler(TwoStepSchedulerBase):
 
     def build_schedule(self, print_time=False,
                        use_phase_tasks=False,
-                       nproc=get_cpu_count()):
+                       nproc=get_cpu_count(),
+                       scalability_filter=1):
 
         start = datetime.now()
 
@@ -757,8 +758,8 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         sched_modified = True
         while sched_modified:
             sched_modified = False
-            resizable_tasks = [t for t in self.tasks
-                               if t.n < nproc and t.is_scalable()]
+            resizable_tasks = [t for t in self.tasks if t.n < nproc and
+                               t.is_scalable(scalability_filter)]
 
             while not sched_modified and len(resizable_tasks) > 0:
                 # select a task on the critical path
@@ -1062,8 +1063,14 @@ def compare_schedules(spec,
                              nproc=nproc)
     cpr_sched.test_schedule_integrity()
 
+    filt80_cpr_sched = CPRDagScheduler(timing_db, dag_manager=dm)
+    filt80_cpr_sched.build_schedule(use_phase_tasks=phase_tasks,
+                             nproc=nproc, scalability_filter=0.8)
+    filt80_cpr_sched.test_schedule_integrity()
+
     mcpa_makespan = mcpa_sched.get_makespan()
     cpr_makespan = cpr_sched.get_makespan()
+    filt80_cpr_makespan = filt80_cpr_sched.get_makespan()
 
     # scalable = 0
     # unscalable = 0
@@ -1079,15 +1086,19 @@ def compare_schedules(spec,
         round(mcpa_makespan, 1), mcpa_sched.sched_build_time()))
     tty.msg('CPR  makespan:   %6ss creation time: %s' % (
         round(cpr_makespan, 1), cpr_sched.sched_build_time()))
+    tty.msg('Filtered CPR  makespan:   %6ss creation time: %s' % (
+        round(filt80_cpr_makespan, 1), filt80_cpr_sched.sched_build_time()))
     tty.msg('Serial makespan: %6ss' % round(mcpa_sched.serial_estimate(), 1))
 
     # mcpa_sched.print_schedule()
-    cpr_sched.print_schedule()
+    #cpr_sched.print_schedule()
     s = spec.name
     print([s, 'CPR', cpr_sched.get_makespan(),
            cpr_sched.sched_build_time().total_seconds()], ',')
+    print([s, 'Filtered CPR', filt80_cpr_sched.get_makespan(),
+           filt80_cpr_sched.sched_build_time().total_seconds()], ',')
     print([s, 'MCPA', mcpa_sched.get_makespan(),
            mcpa_sched.sched_build_time().total_seconds()], ',')
-    print([s, 'Serial', cpr_sched.serial_estimate(), 0], ',')
+    print([s, 'Simple Parallel', cpr_sched.serial_estimate(), 0], ',')
 
     return cpr_sched, mcpa_sched
