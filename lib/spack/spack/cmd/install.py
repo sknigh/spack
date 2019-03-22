@@ -253,20 +253,12 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
             preferred_scheduler = kwargs['scheduler']
             timings_db = TimingsDatabase(use_timings) if use_timings else None
 
-            for ss in [Spec('python'),
-                      Spec('tk'),
-                      Spec('r'),
-                      Spec('xsdk')]:
-                #for ss in [Spec('python'), Spec('tk')]:
-                cpr, mcpa = compare_schedules(ss, timings_db, True, 32)
-                # scheduler = schedule_selector(
-                #     [s],
-                #     timing_db=timings_db,
-                #     preferred_scheduler=preferred_scheduler)
+            scheduler = schedule_selector(
+                [spec],
+                timing_db=timings_db,
+                preferred_scheduler=preferred_scheduler)
 
-            exit()
-
-            #MultiProcSpecInstaller().install_dag(scheduler, kwargs)
+            MultiProcSpecInstaller().install_dag(scheduler, kwargs)
 
             # spec.package.do_install(**kwargs)
 
