@@ -572,7 +572,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         self._decompose_phase_tasks = decompose
 
     def calculate_levels(self):
-        """Traverses task list to update b-levels and t-levels"""
+        """Traverses task list to update b-levels, t-levels and criticality"""
 
         for t in self.tasks_by_prec_level:
             t.b_level(True)
@@ -678,15 +678,13 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         self.tasks_by_prec_level = sorted(
             self.tasks, key=lambda _task: _task.precedence_level)
 
-    def mls(self, t_list, nproc):
-        """M-task list scheduler
-        Creates a schedule from a set of tasks which have been assigned cores.
-        Works by iteratively selecting a task with the highest priority and
-        scheduling it as soon as possible.
+    def mn_mls(self, t_list, nproc, nnode):
+        """Multi-Node M-task list scheduler
+        A variation of MLS that allows schedule creation across multiple
+        nodes."""
 
-        Returns a list of tasks with start and stop times"""
-
-        proc_idle_time = [0] * nproc
+        # don't use * for outer list
+        node_proc_idle_time = [[0] * nproc for _ in range(nnode)]
         unsched = set(t_list)
         scheduled = set()
 
@@ -700,14 +698,24 @@ class TwoStepSchedulerBase(DagSchedulerBase):
             # Priority is determined by the ready task with the highest b-level
             t = max(self.get_ready_tasks(unsched), key=lambda x: x._b_level)
 
-            # Get the tasks earliest start time
+            # Get the task's earliest possible start time
             earliest_start = max([d.end_time for d in t.dependencies],
                                  default=0)
 
-            # Give it a schedule
-            self.schedule_task(t, proc_idle_time,
-                               *self.find_idle_hole(t.n, earliest_start,
-                                                    proc_idle_time))
+            # Get earliest start time for each node
+            hole_choices = [(self.find_idle_hole(
+                t.n, earliest_start, pit), pit) for pit in node_proc_idle_time]
+            # TODO: find the smallest increase in sched gap for tie breaker
+            (best_hole, best_node_procs), node_idx = hole_choices[0], 0
+            for idx, (hole, pit) in enumerate(hole_choices[1:]):
+                if hole[1] < best_hole[1]:
+                    best_hole = hole
+                    best_node_procs = pit
+                    node_idx = idx + 1
+
+            # schedule task
+            self.schedule_task(t, best_node_procs, *best_hole)
+            t.exec_node_id = node_idx
             unsched.remove(t)
             scheduled.add(t)
 
@@ -754,6 +762,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
 
     def build_schedule(self, print_time=False,
                        nproc=get_cpu_count(),
+                       nnode=1,
                        scalability_filter=1):
 
         start = datetime.now()
@@ -763,40 +772,37 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         # Initializing tasks and schedule
         self._build_task_list()
         self.calculate_levels()
-        self.mls(self.tasks, nproc)
+        self.mn_mls(self.tasks, nproc, nnode)
 
         # Keep looping until a better schedule can't be created
         sched_modified = True
+        scalable_tasks = [t for t in self.tasks
+                          if t.is_scalable(scalability_filter)]
         while sched_modified:
             sched_modified = False
-            resizable_tasks = [t for t in self.tasks if t.n < nproc and
-                               t.is_scalable(scalability_filter)]
+            resizable_tasks = [t for t in scalable_tasks if t.n < nproc]
 
             self.calculate_levels()
-            self.mls(self.tasks, nproc)
+            self.mn_mls(self.tasks, nproc, nnode)
             old_makespan = self.get_makespan()
             while not sched_modified and len(resizable_tasks) > 0:
-                # select a task on the critical path
-                # and increase its processor allocation
-                # why is this one better?
-                #ct = self.critical_tasks(resizable_tasks)[0]
-                ct = max(self.critical_tasks(resizable_tasks),
-                         key=lambda tt: tt._t_level)
+                critical_tasks = self.critical_tasks(resizable_tasks)
+                # greatest improvement in work change is used as tie-breaker
+                ct = max(critical_tasks, key=lambda task: task.work_change())
                 ct.n += 1
 
                 self.calculate_levels()
-                self.mls(self.tasks, nproc)
+                self.mn_mls(self.tasks, nproc, nnode)
+                new_makespan = self.get_makespan()
 
                 # if the makespan decreased, use the new schedule
-                new_makespan = self.get_makespan()
                 if new_makespan < old_makespan:
                     # print(new_makespan)
                     sched_modified = True
                 else:
-                    # Otherwise, revert the schedule and remove
+                    # Otherwise, revert the allotment and remove
                     # the task from the list
                     ct.n -= 1
-                    self.calculate_levels()
                     resizable_tasks.remove(ct)
 
         self.incomplete_task_end_times = sorted(t.end_time for t in self.tasks)
@@ -875,8 +881,10 @@ class MCPADagScheduler(TwoStepSchedulerBase):
         """Calculates the computing area, which is the total computed area"""
         return sum(t.exec_time() * t.n for t in self.tasks) / tot_procs
 
-    def build_schedule(self, print_time=False,
-                       nproc=get_cpu_count()):
+    def build_schedule(self,
+                       print_time=False,
+                       nproc=get_cpu_count(),
+                       nnode=1):
 
         start = datetime.now()
 
@@ -923,7 +931,7 @@ class MCPADagScheduler(TwoStepSchedulerBase):
             self.calculate_levels()
             visited.add(opt_task)
 
-        self.mls(self.tasks, nproc)
+        self.mn_mls(self.tasks, nproc, nnode)
         self.incomplete_task_end_times = sorted(t.end_time for t in self.tasks)
         self.spec_to_task = {t.spec_node.spec: t for t in self.tasks}
 
@@ -993,8 +1001,10 @@ class CPADagScheduler(TwoStepSchedulerBase):
         """Calculates the computing area, which is the total computed area"""
         return sum(t.exec_time() * t.n for t in self.tasks) / tot_procs
 
-    def build_schedule(self, print_time=False,
-                       nproc=get_cpu_count()):
+    def build_schedule(self,
+                       print_time=False,
+                       nproc=get_cpu_count(),
+                       nnode=1):
 
         start = datetime.now()
         self._build_schedule_called()
@@ -1024,7 +1034,7 @@ class CPADagScheduler(TwoStepSchedulerBase):
             opt_task.n += 1
             self.calculate_levels()
 
-        self.mls(self.tasks, nproc)
+        self.mn_mls(self.tasks, nproc, nnode)
         self.incomplete_task_end_times = sorted(t.end_time for t in self.tasks)
         self.spec_to_task = {t.spec_node.spec: t for t in self.tasks}
 
@@ -1120,7 +1130,8 @@ def schedule_selector(specs, timing_db=None, preferred_scheduler=None):
 def compare_schedules(spec,
                       timing_db=None,
                       phase_tasks=False,
-                      nproc=get_cpu_count()):
+                      nproc=get_cpu_count(),
+                      nnode=1):
     dm = DagManager()
     dm.add_specs([spec], 4)
     dm.prune_installed()
@@ -1129,7 +1140,7 @@ def compare_schedules(spec,
     def mk_sched(sched_type):
         sched = sched_type(timing_db, dag_manager=dm)
         sched.decompose_task_phases(phase_tasks)
-        sched.build_schedule(nproc=nproc)
+        sched.build_schedule(nproc=nproc, nnode=nnode)
         sched.test_schedule_integrity()
         return sched
 
@@ -1139,23 +1150,14 @@ def compare_schedules(spec,
 
     filt80_cpr_sched = CPRDagScheduler(timing_db, dag_manager=dm)
     filt80_cpr_sched.decompose_task_phases(phase_tasks)
-    filt80_cpr_sched.build_schedule(nproc=nproc, scalability_filter=0.95)
+    filt80_cpr_sched.build_schedule(nproc=nproc, scalability_filter=0.8,
+                                    nnode=nnode)
     filt80_cpr_sched.test_schedule_integrity()
 
     cpa_makespan = cpa_sched.get_makespan()
     mcpa_makespan = mcpa_sched.get_makespan()
     cpr_makespan = cpr_sched.get_makespan()
     filt80_cpr_makespan = filt80_cpr_sched.get_makespan()
-
-    # scalable = 0
-    # unscalable = 0
-    # for t in mcpa_sched.tasks:
-    #     if t.is_scalable(0.9):
-    #         scalable += 1
-    #     else:
-    #         unscalable += 1
-
-    # print('scalable %s, unscalable %s' % (scalable, unscalable))
 
     tty.msg('CPA makespan:           %6ss creation time: %s' % (
         round(cpa_makespan, 1), cpa_sched.sched_build_time()))
@@ -1176,9 +1178,50 @@ def compare_schedules(spec,
     print([s, 'Filtered CPR', filt80_cpr_sched.get_makespan(),
            filt80_cpr_sched.sched_build_time().total_seconds()], ',')
     print([s, 'CPR', cpr_sched.get_makespan(),
-           cpr_sched.sched_build_time().total_seconds()], ',')
+          cpr_sched.sched_build_time().total_seconds()], ',')
     print([s, 'MCPA', mcpa_sched.get_makespan(),
            mcpa_sched.sched_build_time().total_seconds()], ',')
     print([s, 'CPA', cpa_sched.get_makespan(),
            cpa_sched.sched_build_time().total_seconds()], ',')
-    print([s, 'Simple Parallel', mcpa_sched.serial_estimate(), 0], ',')
+    print([s, 'Simple Parallel', cpr_sched.serial_estimate(), 0], ',')
+
+
+def compare_large_schedules(specs,
+                            timing_db=None,
+                            phase_tasks=False,
+                            nproc=get_cpu_count(),
+                            nnode=1):
+    dm = DagManager()
+    dm.add_specs(specs, 4)
+    dm.prune_installed()
+    # tty.msg('Created DAG with %s Specs' % dm.count())
+
+    def mk_sched(sched_type):
+        sched = sched_type(timing_db, dag_manager=dm)
+        sched.decompose_task_phases(phase_tasks)
+        sched.build_schedule(nproc=nproc, nnode=nnode)
+        sched.test_schedule_integrity()
+        return sched
+
+    cpa_sched = mk_sched(CPADagScheduler)
+    mcpa_sched = mk_sched(MCPADagScheduler)
+
+    print(len(cpa_sched.tasks), 'tasks')
+    print(['sched', 'MCPA', mcpa_sched.get_makespan(),
+           mcpa_sched.sched_build_time().total_seconds()], ',')
+    print(['sched', 'CPA', cpa_sched.get_makespan(),
+           cpa_sched.sched_build_time().total_seconds()], ',')
+    print(['sched', 'Simple Parallel', mcpa_sched.serial_estimate(), 0], ',')
+
+    def print_sched_node_allotment(sched, name):
+        print(name)
+        assigned_nodes = set(t.exec_node_id for t in sched.tasks)
+        print("Scheduled Nodes:", assigned_nodes)
+        for a in assigned_nodes:
+            print("Node",
+                  a,
+                  sum(1 for t in sched.tasks if t.exec_node_id == a),
+                  "Tasks")
+
+    print_sched_node_allotment(mcpa_sched, 'MCPA Schedule')
+    print_sched_node_allotment(cpa_sched, 'CPA Schedule')
