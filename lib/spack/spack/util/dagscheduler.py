@@ -511,8 +511,17 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         self.tasks = []
         self.tasks_by_prec_level = []
         self._exit_tasks = None
-        self._entrance_tasks = None
+        self._entry_tasks = None
         self._decompose_phase_tasks = False
+
+        # A list task end times for tasks that have not yet completed. Used
+        # for selecting the next task to schedule
+        self.incomplete_task_end_times = []
+
+        # spec -> task lookup table
+        self.spec_to_task = {}
+
+        self._popped_tasks = set()
 
     def test_schedule_integrity(self):
         """Checks that schedule does not violate dependency ordering"""
@@ -526,13 +535,13 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         """Returns the time it took to create the schedule"""
         raise NotImplementedError()
 
-    def entrance_tasks(self):
+    def entry_tasks(self):
         """Returns a list of entrance tasks from the current DAG"""
-        if self._entrance_tasks:
-            return self._entrance_tasks
+        if self._entry_tasks:
+            return self._entry_tasks
         else:
-            self._entrance_tasks = [t for t in self.tasks if t.is_entry()]
-            return self._entrance_tasks
+            self._entry_tasks = [t for t in self.tasks if t.is_entry()]
+            return self._entry_tasks
 
     def exit_tasks(self):
         """Returns a list of exit tasks from the current DAG"""
@@ -726,9 +735,47 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
         return list(scheduled)
 
-    def serial_estimate(self):
+    def sequential_estimate(self):
         """Gets expected execution time if the tasks were run in serial"""
         return sum(t.exec_time(get_cpu_count()) for t in self.tasks)
+
+    def install_successful(self, spec):
+        task = self.spec_to_task[spec]
+
+        # propagate to the base class
+        self._dag_manager.install_successful(spec)
+
+        # remove end time from the list
+        self.incomplete_task_end_times.remove(task.end_time)
+
+    def install_failed(self, spec):
+
+        # Get all of the tasks that cannot execute
+        failed = list(super().install_failed(spec))
+        failed.append(spec)
+
+        # Remove tasks from schedule
+        for t in [self.spec_to_task[t] for t in failed]:
+            self.tasks.remove(t)
+            self.incomplete_task_end_times.remove(t.end_time)
+
+        # Return the list to the caller
+        return failed
+
+    def pop_ready_specs(self):
+        """ Generates a list of ready tasks
+
+        The schedule is generated with concrete start and end times. A task may
+        begin when all tasks with an end time earlier than its start time have
+        completed"""
+
+        earliest_end_time = min(self.incomplete_task_end_times,
+                                default=float('inf'))
+        for t in self.tasks:
+            if t.start_time < earliest_end_time and t not in self._popped_tasks:
+                # ensure the task is only returned from this generator once
+                self._popped_tasks.add(t)
+                yield t.n, t.spec_node.spec
 
 
 class CPRDagScheduler(TwoStepSchedulerBase):
@@ -747,15 +794,6 @@ class CPRDagScheduler(TwoStepSchedulerBase):
 
     def __init__(self, timing_db, dag_manager=None):
         super().__init__(dag_manager, timing_db)
-
-        # A list task end times for tasks that have not yet completed. Used
-        # for selecting the next task to schedule
-        self.incomplete_task_end_times = []
-
-        # spec -> task lookup table
-        self.spec_to_task = {}
-
-        self._popped_tasks = set()
         self._schedule_build_time = None
 
     def sched_build_time(self):
@@ -812,44 +850,6 @@ class CPRDagScheduler(TwoStepSchedulerBase):
 
         self._schedule_build_time = (datetime.now() - start)
 
-    def install_successful(self, spec):
-        task = self.spec_to_task[spec]
-
-        # propagate to the base class
-        self._dag_manager.install_successful(spec)
-
-        # remove end time from the list
-        self.incomplete_task_end_times.remove(task.end_time)
-
-    def install_failed(self, spec):
-
-        # Get all of the tasks that cannot execute
-        failed = list(super().install_failed(spec))
-        failed.append(spec)
-
-        # Remove tasks from schedule
-        for t in [self.spec_to_task[t] for t in failed]:
-            self.tasks.remove(t)
-            self.incomplete_task_end_times.remove(t.end_time)
-
-        # Return the list to the caller
-        return failed
-
-    def pop_ready_specs(self):
-        """ Generates a list of ready tasks
-
-        The schedule is generated with concrete start and end times. A task may
-        begin when all tasks with an end time earlier than its start time have
-        completed"""
-
-        earliest_end_time = min(self.incomplete_task_end_times,
-                                default=float('inf'))
-        for t in self.tasks:
-            if t.start_time < earliest_end_time and t not in self._popped_tasks:
-                # ensure the task is only returned from this generator once
-                self._popped_tasks.add(t)
-                yield t.n, t.spec_node.spec
-
 
 class MCPADagScheduler(TwoStepSchedulerBase):
     """Modified Critical Path and Allocation scheduler.
@@ -864,16 +864,6 @@ class MCPADagScheduler(TwoStepSchedulerBase):
 
     def __init__(self, timing_db, dag_manager=None):
         super().__init__(dag_manager, timing_db)
-
-        # A list task end times for tasks that have not yet completed. Used
-        # for selecting the next task to schedule
-        self.incomplete_task_end_times = []
-
-        # spec -> task lookup table
-        self.spec_to_task = {}
-
-        self._popped_tasks = set()
-
         self._schedule_build_time = None
 
     def sched_build_time(self):
@@ -901,12 +891,13 @@ class MCPADagScheduler(TwoStepSchedulerBase):
         visited = set()
 
         # continue while Critical path exceeds average compute area
-        while (max(t.b_level() for t in self.tasks) >
+        while (max(t._b_level for t in self.entry_tasks()) >
                self.compute_area(nproc)):
 
             # list of tasks on the critical path that can allocate more cores
             crit_tasks = [t for t in
-                          self.critical_tasks(self.tasks) if t.n < nproc]
+                          self.critical_tasks(
+                              tt for tt in self.tasks if tt.n < nproc)]
 
             # calculate precedence levels, but only on visited tasks
             prec_levels = [0] * num_prec_levels
@@ -937,44 +928,6 @@ class MCPADagScheduler(TwoStepSchedulerBase):
 
         self._schedule_build_time = (datetime.now() - start)
 
-    def install_successful(self, spec):
-        task = self.spec_to_task[spec]
-
-        # propagate to the base class
-        self._dag_manager.install_successful(spec)
-
-        # remove end time from the list
-        self.incomplete_task_end_times.remove(task.end_time)
-
-    def install_failed(self, spec):
-
-        # Get all of the tasks that cannot execute
-        failed = list(super().install_failed(spec))
-        failed.append(spec)
-
-        # Remove tasks from schedule
-        for t in [self.spec_to_task[t] for t in failed]:
-            self.tasks.remove(t)
-            self.incomplete_task_end_times.remove(t.end_time)
-
-        # Return the list to the caller
-        return failed
-
-    def pop_ready_specs(self):
-        """ Generates a list of ready tasks
-
-        The schedule is generated with concrete start and end times. A task may
-        begin when all tasks with an end time earlier than its start time have
-        completed"""
-
-        earliest_end_time = min(self.incomplete_task_end_times,
-                                default=float('inf'))
-        for t in self.tasks:
-            if t.start_time < earliest_end_time and t not in self._popped_tasks:
-                # ensure the task is only returned from this generator once
-                self._popped_tasks.add(t)
-                yield t.n, t.spec_node.spec
-
 
 class CPADagScheduler(TwoStepSchedulerBase):
     """Critical Path and Allocation Scheduling algorithm.
@@ -982,16 +935,6 @@ class CPADagScheduler(TwoStepSchedulerBase):
 
     def __init__(self, timing_db, dag_manager=None):
         super().__init__(dag_manager, timing_db)
-
-        # A list task end times for tasks that have not yet completed. Used
-        # for selecting the next task to schedule
-        self.incomplete_task_end_times = []
-
-        # spec -> task lookup table
-        self.spec_to_task = {}
-
-        self._popped_tasks = set()
-
         self._schedule_build_time = None
 
     def sched_build_time(self):
@@ -1014,14 +957,15 @@ class CPADagScheduler(TwoStepSchedulerBase):
         self.calculate_levels()
 
         # continue while Critical path exceeds average compute area
-        while (max(t.b_level() for t in self.entrance_tasks()) >
+        while (max(t._b_level for t in self.entry_tasks()) >
                self.compute_area(nproc)):
 
             # list of tasks on the critical path that can allocate more cores
-            crit_tasks = [t for t in self.critical_tasks(self.tasks)
-                          if t.n < nproc]
+            crit_tasks = [t for t in
+                          self.critical_tasks(
+                              tt for tt in self.tasks if tt.n < nproc)]
 
-            # select the task with the greatest improvement
+            # select the task with the greatest work improvement
             opt_task = max(
                 (t for t in crit_tasks),
                 key=lambda x: x.work_change(), default=None)
@@ -1039,44 +983,6 @@ class CPADagScheduler(TwoStepSchedulerBase):
         self.spec_to_task = {t.spec_node.spec: t for t in self.tasks}
 
         self._schedule_build_time = (datetime.now() - start)
-
-    def install_successful(self, spec):
-        task = self.spec_to_task[spec]
-
-        # propagate to the base class
-        self._dag_manager.install_successful(spec)
-
-        # remove end time from the list
-        self.incomplete_task_end_times.remove(task.end_time)
-
-    def install_failed(self, spec):
-
-        # Get all of the tasks that cannot execute
-        failed = list(super().install_failed(spec))
-        failed.append(spec)
-
-        # Remove tasks from schedule
-        for t in [self.spec_to_task[t] for t in failed]:
-            self.tasks.remove(t)
-            self.incomplete_task_end_times.remove(t.end_time)
-
-        # Return the list to the caller
-        return failed
-
-    def pop_ready_specs(self):
-        """ Generates a list of ready tasks
-
-        The schedule is generated with concrete start and end times. A task may
-        begin when all tasks with an end time earlier than its start time have
-        completed"""
-
-        earliest_end_time = min(self.incomplete_task_end_times,
-                                default=float('inf'))
-        for t in self.tasks:
-            if t.start_time < earliest_end_time and t not in self._popped_tasks:
-                # ensure the task is only returned from this generator once
-                self._popped_tasks.add(t)
-                yield t.n, t.spec_node.spec
 
 
 def schedule_selector(specs,
@@ -1123,7 +1029,7 @@ def schedule_selector(specs,
     if cpr_makespan < mcpa_makespan or preferred_scheduler == 'CPRDagScheduler':
         tty.msg('Selected CPRDagScheduler')
         return cpr_sched
-    if mcpa_sched.serial_estimate() < mcpa_makespan:
+    if mcpa_sched.sequential_estimate() < mcpa_makespan:
         tty.msg('Selected SimpleDagScheduler')
         return SimpleDagScheduler(dag_manager=dm)
     else:
@@ -1139,7 +1045,7 @@ def compare_schedules(spec,
     dm = DagManager()
     dm.add_specs([spec], 4)
     dm.prune_installed()
-    tty.msg('Created DAG with %s Specs' % dm.count())
+    # tty.msg('Created DAG with %s Specs' % dm.count())
 
     def mk_sched(sched_type):
         sched = sched_type(timing_db, dag_manager=dm)
@@ -1172,7 +1078,7 @@ def compare_schedules(spec,
     tty.msg('Filtered CPR  makespan: %6ss creation time: %s' % (
         round(filt80_cpr_makespan, 1), filt80_cpr_sched.sched_build_time()))
     tty.msg('Serial makespan:        %6ss' %
-            round(mcpa_sched.serial_estimate(), 1))
+            round(mcpa_sched.sequential_estimate(), 1))
 
     # mcpa_sched.print_schedule()
     #cpr_sched.print_schedule()
@@ -1187,7 +1093,7 @@ def compare_schedules(spec,
            mcpa_sched.sched_build_time().total_seconds()], ',')
     print([s, 'CPA', cpa_sched.get_makespan(),
            cpa_sched.sched_build_time().total_seconds()], ',')
-    print([s, 'Simple Parallel', cpr_sched.serial_estimate(), 0], ',')
+    print([s, 'Simple Parallel', cpr_sched.sequential_estimate(), 0], ',')
 
 
 def compare_large_schedules(specs,
@@ -1215,7 +1121,7 @@ def compare_large_schedules(specs,
            mcpa_sched.sched_build_time().total_seconds()], ','),
     print(['sched', 'CPA', cpa_sched.get_makespan(),
            cpa_sched.sched_build_time().total_seconds()], ',')
-    print(['sched', 'Simple Parallel', mcpa_sched.serial_estimate(), 0], ',')
+    print(['sched', 'Simple Parallel', mcpa_sched.sequential_estimate(), 0], ',')
 
     def print_sched_node_allotment(sched, name):
         print(name)
