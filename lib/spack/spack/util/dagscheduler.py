@@ -1,12 +1,14 @@
-from copy import copy
 import time
+from copy import copy
 from datetime import datetime
 from multiprocessing import Pool, cpu_count
-import spack
-from spack.spec import Spec
+
 import llnl.util.tty as tty
+import spack
 from llnl.util.lang import memoized
+from spack.spec import Spec
 from spack.util.install_time_estimator import AsymptoticTimeEstimator
+
 
 # TODO: Returns logical processors, which will be 1x, 2x, or 4x the
 #  number of available hardware cores
@@ -436,7 +438,6 @@ class TwoStepSchedulerBase(DagSchedulerBase):
             try:
                 est.add_measurements(*zip(*tup_list))
             except:
-                print(list(timing_db.phases_gen('rust')))
                 tty.die("Could not initialize task '%s', database missing "
                         "timing information" % spec_name)
             return est
@@ -591,7 +592,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         return max([t.end_time for t in self.exit_tasks()])
 
     @staticmethod
-    def schedule_task(t, proc_idle_time, p_list, start_time):
+    def schedule_task(t, proc_idle_time, p_list, start_time, node_idx):
         """Schedules a task, mutates processor idle times"""
         new_end_time = start_time + t.exec_time()
         for p in p_list:
@@ -599,6 +600,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
         t.start_time = start_time
         t.end_time = new_end_time
+        t.exec_node_id = node_idx
 
     @staticmethod
     def find_idle_hole(n, earliest_start, proc_idle_time):
@@ -628,11 +630,12 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
         for t in t_list:
             cost = t.criticality
-            if cost > max_cost:
+            # computers are supposed to replace us, yet they can't add...
+            if abs(cost - max_cost) < 0.00001:
+                crit_tasks.append(t)
+            elif cost > max_cost:
                 max_cost = cost
                 crit_tasks = [t]
-            elif cost == max_cost:
-                crit_tasks.append(t)
 
         return crit_tasks
 
@@ -698,7 +701,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
             # Priority is determined by the ready task with the highest b-level
             t = max(self.get_ready_tasks(unsched), key=lambda x: x._b_level)
 
-            # Get the task's earliest possible start time
+            # Get the task's earliest possible start time from dependencies
             earliest_start = max([d.end_time for d in t.dependencies],
                                  default=0)
 
@@ -714,8 +717,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
                     node_idx = idx + 1
 
             # schedule task
-            self.schedule_task(t, best_node_procs, *best_hole)
-            t.exec_node_id = node_idx
+            self.schedule_task(t, best_node_procs, *best_hole, node_idx)
             unsched.remove(t)
             scheduled.add(t)
 
@@ -740,7 +742,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
     --> O(EV^2P + V^3P(logV + PlogP)) Where:
     P is the number of cores
     V is the number of specs
-    E is the number of dependencies between specs
+    E is the total number of dependencies
     """
 
     def __init__(self, timing_db, dag_manager=None):
@@ -763,7 +765,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
     def build_schedule(self, print_time=False,
                        nproc=get_cpu_count(),
                        nnode=1,
-                       scalability_filter=1):
+                       scalability_filter=float("inf")):
 
         start = datetime.now()
 
@@ -898,7 +900,6 @@ class MCPADagScheduler(TwoStepSchedulerBase):
         # Used to calculate precedence level
         visited = set()
 
-        i = 0
         # continue while Critical path exceeds average compute area
         while (max(t.b_level() for t in self.tasks) >
                self.compute_area(nproc)):
@@ -924,7 +925,6 @@ class MCPADagScheduler(TwoStepSchedulerBase):
             if not opt_task:
                 # print('Warn: No improvement found at iteration', i)
                 break
-            i += 1
 
             # Update the task, precedence/b/t-levels, and visited set
             opt_task.n += 1
@@ -1079,7 +1079,11 @@ class CPADagScheduler(TwoStepSchedulerBase):
                 yield t.n, t.spec_node.spec
 
 
-def schedule_selector(specs, timing_db=None, preferred_scheduler=None):
+def schedule_selector(specs,
+                      timing_db=None,
+                      preferred_scheduler=None,
+                      nproc=get_cpu_count(),
+                      nnode=1):
     """Selects and initializes the best scheduler from the provided
     information"""
 
@@ -1094,15 +1098,15 @@ def schedule_selector(specs, timing_db=None, preferred_scheduler=None):
         return SimpleDagScheduler(dag_manager=dm)
 
     mcpa_sched = MCPADagScheduler(timing_db, dag_manager=dm)
-    mcpa_sched.build_schedule()
+    mcpa_sched.build_schedule(nproc=nproc, nnode=nnode)
 
     # CPR is costly, do not use when there too many Specs
-    if dm.count() > 150:
+    if dm.count() > 200:
         tty.msg('Selected MCPADagScheduler')
         return mcpa_sched
 
     cpr_sched = CPRDagScheduler(timing_db, dag_manager=dm)
-    cpr_sched.build_schedule()
+    cpr_sched.build_schedule(nproc=nproc, nnode=nnode)
 
     mcpa_makespan = mcpa_sched.get_makespan()
     cpr_makespan = cpr_sched.get_makespan()
@@ -1208,7 +1212,7 @@ def compare_large_schedules(specs,
 
     print(len(cpa_sched.tasks), 'tasks')
     print(['sched', 'MCPA', mcpa_sched.get_makespan(),
-           mcpa_sched.sched_build_time().total_seconds()], ',')
+           mcpa_sched.sched_build_time().total_seconds()], ','),
     print(['sched', 'CPA', cpa_sched.get_makespan(),
            cpa_sched.sched_build_time().total_seconds()], ',')
     print(['sched', 'Simple Parallel', mcpa_sched.serial_estimate(), 0], ',')
