@@ -18,7 +18,7 @@ import spack.environment as ev
 import spack.fetch_strategy
 import spack.paths
 import spack.report
-from spack.util.dagscheduler import schedule_selector, TwoStepSchedulerBase, compare_schedules
+from spack.util.dagscheduler import schedule_selector, TwoStepSchedulerBase, compare_schedules, compare_large_schedules
 from spack.util.multiproc_installer import MultiProcSpecInstaller
 from spack.timings_database import TimingsDatabase
 from spack.error import SpackError
@@ -47,6 +47,7 @@ def update_kwargs_from_args(args, kwargs):
         'time_phases': args.time_phases,
         'use_timings': args.use_timings,
         'scheduler': args.scheduler,
+        'nnode': args.nnode,
     })
     if hasattr(args, 'setup'):
         setups = set()
@@ -107,6 +108,9 @@ the dependencies"""
         '--scheduler', action='store', default=None,
         help='Specify a DAG scheduler to use'
     )
+    subparser.add_argument(
+        '-N', '--nnode', action='store', default=1, type=int, dest='nnode',
+        help='number of nodes to schedule')
     arguments.add_common_arguments(subparser, ['no_checksum'])
     subparser.add_argument(
         '-v', '--verbose', action='store_true',
@@ -203,12 +207,14 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
         else:
             use_timings = kwargs['use_timings']
             preferred_scheduler = kwargs['scheduler']
+            nnode = kwargs['nnode']
             timings_db = TimingsDatabase(use_timings) if use_timings else None
 
             scheduler = schedule_selector(
                 [spec],
                 timing_db=timings_db,
-                preferred_scheduler=preferred_scheduler)
+                preferred_scheduler=preferred_scheduler,
+                nnode=nnode)
 
             MultiProcSpecInstaller().install_dag(scheduler, kwargs)
 
