@@ -998,10 +998,31 @@ def schedule_selector(specs,
     dm.prune_installed()
     tty.msg('Created DAG with %s Specs' % dm.count())
 
-    if not timing_db or preferred_scheduler == 'SimpleDagScheduler':
+    if not timing_db or preferred_scheduler.lower() == 'simple':
         # No timing information prevents sophisticated scheduling
         tty.msg('Selected SimpleDagScheduler')
         return SimpleDagScheduler(dag_manager=dm)
+
+    if preferred_scheduler.lower() == 'cpr':
+        print('Selected CPR')
+        sched = CPRDagScheduler(timing_db, dag_manager=dm)
+        sched.build_schedule(nproc=nproc, nnode=nnode)
+        return sched
+    elif preferred_scheduler.lower() == 'filteredcpr':
+        print('Selected Filtered CPR')
+        sched = CPRDagScheduler(timing_db, dag_manager=dm)
+        sched.build_schedule(nproc=nproc, nnode=nnode, scalability_filter=0.8)
+        return sched
+    elif preferred_scheduler.lower() == 'cpa':
+        print('Selected CPA')
+        sched = CPADagScheduler(timing_db, dag_manager=dm)
+        sched.build_schedule(nproc=nproc, nnode=nnode)
+        return sched
+    elif preferred_scheduler.lower() == 'mcpa':
+        print('Selected MCPA')
+        sched = MCPADagScheduler(timing_db, dag_manager=dm)
+        sched.build_schedule(nproc=nproc, nnode=nnode)
+        return sched
 
     mcpa_sched = MCPADagScheduler(timing_db, dag_manager=dm)
     mcpa_sched.build_schedule(nproc=nproc, nnode=nnode)
@@ -1016,14 +1037,6 @@ def schedule_selector(specs,
 
     mcpa_makespan = mcpa_sched.get_makespan()
     cpr_makespan = cpr_sched.get_makespan()
-
-    # When the user has explicitly requested a scheduler
-    if preferred_scheduler == 'CPRDagScheduler':
-        tty.msg('Selected CPRDagScheduler')
-        return cpr_sched
-    elif preferred_scheduler == 'MCPADagScheduler':
-        tty.msg('Selected MCPADagScheduler')
-        return mcpa_sched
 
     # select the schedule with the shortest makespan
     if cpr_makespan < mcpa_makespan or preferred_scheduler == 'CPRDagScheduler':
