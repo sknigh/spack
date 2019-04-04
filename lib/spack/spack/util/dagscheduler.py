@@ -523,6 +523,10 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
         self._popped_tasks = set()
 
+        # Save the steps used to create the last schedule so MLS can avoid
+        # some of the cost of creating a new one
+        self._prev_schedule_steps = []
+
     def test_schedule_integrity(self):
         """Checks that schedule does not violate dependency ordering"""
         for t in self.tasks:
@@ -612,6 +616,20 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         t.exec_node_id = node_idx
 
     @staticmethod
+    def schedule_task_save(proc_idle_time, t, p_list, start_time, node_idx):
+        """Schedules a task, mutates processor idle times.
+        Returns its parameters"""
+        new_end_time = start_time + t.exec_time()
+        for p in p_list:
+            proc_idle_time[node_idx][p] = new_end_time
+
+        t.start_time = start_time
+        t.end_time = new_end_time
+        t.exec_node_id = node_idx
+
+        return [t._b_level, t, p_list, start_time, node_idx]
+
+    @staticmethod
     def find_idle_hole(n, earliest_start, proc_idle_time):
         """Finds the earliest processor idle for a given number of cores
         returns tuple: (processor list, start time)
@@ -691,6 +709,77 @@ class TwoStepSchedulerBase(DagSchedulerBase):
             self.tasks, key=lambda _task: _task.precedence_level)
 
     def mn_mls(self, t_list, nproc, nnode):
+        """Multinode M-task list scheduler
+        This contains several enhancements over the original implementation
+        in the literature:
+         - Hole filling: will search for cores that minimize start time,
+           then select select check for cores that minimize idle holes
+         - Multi-node schedules: Will spread tasks across an arbitrary set
+           of processors
+         - Schedule retracing: Remembers steps to building last schedule. It
+           will replay those steps until a changed task is discovered, then
+           resume scheduling normally. This improves CPR's average time
+           complexity"""
+
+        node_proc_idle_time = [[0] * nproc for _ in range(nnode)]
+        scheduled = []
+
+        # Priority is determined by the ready task with the highest b-level
+        unsched = sorted(t_list, key=lambda tt: tt.b_level())
+
+        for t in t_list:
+            t.start_time = 0
+            t.end_time = 0
+            t.init_unsched_deps()
+
+        # Reuse the previous schedule until a changed task is encountered
+        for i, step in enumerate(self._prev_schedule_steps):
+            t = unsched[-1]
+            prev_b_level = step[0]
+            prev_t = step[1]
+
+            if t == prev_t and t.b_level() == prev_b_level:
+                unsched.pop()
+                scheduled.append(t)
+                self.schedule_task_save(node_proc_idle_time, *step[1:])
+            else:
+                # Prune the remaining schedule
+                self._prev_schedule_steps = self._prev_schedule_steps[:i]
+                break
+
+        while len(unsched) > 0:
+            # popping selects the task with the highest t-level
+            t = unsched.pop()
+
+            # Get the task's earliest possible start time from dependencies
+            earliest_start = max([d.end_time for d in t.dependencies],
+                                 default=0)
+
+            # Get earliest start time for each node
+            hole_choices = [(self.find_idle_hole(
+                t.n, earliest_start, pit), pit) for pit in node_proc_idle_time]
+
+            # TODO: find the smallest increase in sched gap for tie breaker
+            (best_hole, best_node_procs), node_idx = hole_choices[0], 0
+            for idx, (hole, pit) in enumerate(hole_choices[1:]):
+                if hole[1] < best_hole[1]:
+                    best_hole = hole
+                    best_node_procs = pit
+                    node_idx = idx
+
+            # schedule task
+            sched_step = self.schedule_task_save(node_proc_idle_time,
+                                                 t, *best_hole, node_idx)
+            self._prev_schedule_steps.append(sched_step)
+            scheduled.append(t)
+
+            for dpdt in t.dependents:
+                dpdt.unsched_deps -= 1
+
+        return scheduled
+
+
+    def _mn_mls(self, t_list, nproc, nnode):
         """Multi-Node M-task list scheduler
         A variation of MLS that allows schedule creation across multiple
         nodes."""
@@ -1090,7 +1179,7 @@ def compare_schedules(spec,
         round(cpr_makespan, 1), cpr_sched.sched_build_time()))
     tty.msg('Filtered CPR  makespan: %6ss creation time: %s' % (
         round(filt80_cpr_makespan, 1), filt80_cpr_sched.sched_build_time()))
-    tty.msg('Serial makespan:        %6ss' %
+    tty.msg('Sequential makespan:        %6ss' %
             round(mcpa_sched.sequential_estimate(), 1))
 
     # mcpa_sched.print_schedule()
@@ -1106,7 +1195,7 @@ def compare_schedules(spec,
            mcpa_sched.sched_build_time().total_seconds()], ',')
     print([s, 'CPA', cpa_sched.get_makespan(),
            cpa_sched.sched_build_time().total_seconds()], ',')
-    print([s, 'Simple Parallel', cpr_sched.sequential_estimate(), 0], ',')
+    print([s, 'Sequential', cpr_sched.sequential_estimate(), 0], ',')
 
 
 def compare_large_schedules(specs,
@@ -1134,7 +1223,7 @@ def compare_large_schedules(specs,
            mcpa_sched.sched_build_time().total_seconds()], ','),
     print(['sched', 'CPA', cpa_sched.get_makespan(),
            cpa_sched.sched_build_time().total_seconds()], ',')
-    print(['sched', 'Simple Parallel', mcpa_sched.sequential_estimate(), 0], ',')
+    print(['sched', 'Sequential', mcpa_sched.sequential_estimate(), 0], ',')
 
     def print_sched_node_allotment(sched, name):
         print(name)
