@@ -1,4 +1,9 @@
-import numpy as np
+try:
+    import numpy as np
+except:
+    print("You are going to get a cryptic error because numpy is not in"
+          " your environment")
+
 from llnl.util.lang import memoized
 
 
