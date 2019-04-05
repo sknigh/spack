@@ -708,8 +708,8 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         self.tasks_by_prec_level = sorted(
             self.tasks, key=lambda _task: _task.precedence_level)
 
-    def mn_mls(self, t_list, nproc, nnode):
-        """Multinode M-task list scheduler
+    def r_mn_mls(self, t_list, nproc, nnode):
+        """Retracing Multinode M-task list scheduler
         This contains several enhancements over the original implementation
         in the literature:
          - Hole filling: will search for cores that minimize start time,
@@ -725,7 +725,12 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         scheduled = []
 
         # Priority is determined by the ready task with the highest b-level
-        unsched = sorted(t_list, key=lambda tt: tt.b_level())
+        # unsched = sorted(t_list, key=lambda tt: tt.b_level())
+
+        # Python uses Timsort, which should run in near linear time if the
+        # list is already sorted
+        t_list.sort(key=lambda tt: tt.b_level())
+        unsched = t_list.copy()
 
         for t in t_list:
             t.start_time = 0
@@ -779,7 +784,7 @@ class TwoStepSchedulerBase(DagSchedulerBase):
         return scheduled
 
 
-    def _mn_mls(self, t_list, nproc, nnode):
+    def mn_mls(self, t_list, nproc, nnode):
         """Multi-Node M-task list scheduler
         A variation of MLS that allows schedule creation across multiple
         nodes."""
@@ -901,7 +906,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
         # Initializing tasks and schedule
         self._build_task_list()
         self.calculate_levels()
-        self.mn_mls(self.tasks, nproc, nnode)
+        self.r_mn_mls(self.tasks, nproc, nnode)
 
         # Keep looping until a better schedule can't be created
         sched_modified = True
@@ -912,7 +917,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
             resizable_tasks = [t for t in scalable_tasks if t.n < nproc]
 
             self.calculate_levels()
-            self.mn_mls(self.tasks, nproc, nnode)
+            self.r_mn_mls(self.tasks, nproc, nnode)
             old_makespan = self.get_makespan()
             while not sched_modified and len(resizable_tasks) > 0:
                 critical_tasks = self.critical_tasks(resizable_tasks)
@@ -921,7 +926,7 @@ class CPRDagScheduler(TwoStepSchedulerBase):
                 ct.n += 1
 
                 self.calculate_levels()
-                self.mn_mls(self.tasks, nproc, nnode)
+                self.r_mn_mls(self.tasks, nproc, nnode)
                 new_makespan = self.get_makespan()
 
                 # if the makespan decreased, use the new schedule
