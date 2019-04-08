@@ -1210,8 +1210,8 @@ def compare_large_schedules(specs,
                             nnode=1):
     dm = DagManager()
     dm.add_specs(specs, 4)
-    dm.prune_installed()
-    # tty.msg('Created DAG with %s Specs' % dm.count())
+    #dm.prune_installed()
+    tty.msg('Created DAG with %s Specs' % dm.count())
 
     def mk_sched(sched_type):
         sched = sched_type(timing_db, dag_manager=dm)
@@ -1242,3 +1242,25 @@ def compare_large_schedules(specs,
 
     print_sched_node_allotment(mcpa_sched, 'MCPA Schedule')
     print_sched_node_allotment(cpa_sched, 'CPA Schedule')
+
+
+def max_speedup_list_for_stack(specs, timing_db, nproc):
+    dm = DagManager()
+    dm.add_specs(specs, 4)
+    dm.prune_installed()
+    #
+    # sched = CPADagScheduler(dm)
+    # sched.build_schedule(nproc=nprocs, nnode=1)
+
+    def mk_sched(sched_type):
+        sched = sched_type(timing_db, dag_manager=dm)
+        sched.build_schedule(nproc=nproc, nnode=1)
+        sched.test_schedule_integrity()
+        return sched
+
+    cpa_sched = mk_sched(CPADagScheduler)
+
+    print("pd.DataFrame(columns=['Package', 'Speedup'], data=[")
+    for t in cpa_sched.tasks:
+        print("  ['%s', %s]," % (t.name, t._estimator.max_speedup(nproc)))
+    print("])")
