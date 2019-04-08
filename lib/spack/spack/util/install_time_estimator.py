@@ -42,6 +42,11 @@ class InstallTimeEstimatorBase:
         """Add a measurement"""
         self.add_measurements([make_job], [time])
 
+    def max_speedup(self, max_jobs):
+        """Returns the best estimated speedup ratio"""
+        best = min(self.estimate(t) for t in range(1, max_jobs + 1))
+        return self.estimate(1)/best
+
 
 class AsymptoticTimeEstimator(InstallTimeEstimatorBase):
     """Use an asymptotic first degree polynomial curve to estimate build time"""
