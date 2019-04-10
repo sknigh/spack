@@ -23,12 +23,15 @@ from spack.util.multiproc_installer import MultiProcSpecInstaller
 from spack.timings_database import TimingsDatabase
 from spack.error import SpackError
 from spack.spec import Spec
+from multiprocessing import cpu_count
 
 
 description = "build and install packages"
 section = "build"
 level = "short"
 
+def get_cpu_count():
+    return int(cpu_count()/2)
 
 def update_kwargs_from_args(args, kwargs):
     """Parse cli arguments and construct a dictionary
@@ -48,6 +51,7 @@ def update_kwargs_from_args(args, kwargs):
         'use_timings': args.use_timings,
         'scheduler': args.scheduler,
         'nnode': args.nnode,
+        'compare_schedulers': args.compare_schedulers,
     })
     if hasattr(args, 'setup'):
         setups = set()
@@ -105,7 +109,12 @@ the dependencies"""
         help='Use timings sqlite3 file for scheduling'
     )
     subparser.add_argument(
-        '--scheduler', action='store', default=None,
+        '--compare-schedulers', action='store', default=None,
+        help='print schedule timings for a spec, specify "phase"'
+             'or "package" for phase or package DAG schedules'
+    )
+    subparser.add_argument(
+        '--scheduler', action='store', default='not-selected',
         help='Specify a DAG scheduler to use'
     )
     subparser.add_argument(
@@ -205,18 +214,27 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
             env.install(abstract_spec, spec, **kwargs)
             env.write()
         else:
-            use_timings = kwargs['use_timings']
             preferred_scheduler = kwargs['scheduler']
             nnode = kwargs['nnode']
+            compare_schedulers = kwargs['compare_schedulers']
+
+            use_timings = kwargs['use_timings']
             timings_db = TimingsDatabase(use_timings) if use_timings else None
 
-            scheduler = schedule_selector(
-                [spec],
-                timing_db=timings_db,
-                preferred_scheduler=preferred_scheduler,
-                nnode=nnode)
+            nprocs = kwargs['make_jobs']
+            nprocs = int(nprocs) if nprocs else get_cpu_count()
 
-            MultiProcSpecInstaller().install_dag(scheduler, kwargs)
+            if kwargs['compare_schedulers']:
+                compare_schedules(spec, timings_db, compare_schedulers.lower() == 'phase', nprocs, nnode)
+            else:
+                scheduler = schedule_selector(
+                    [spec],
+                    timing_db=timings_db,
+                    preferred_scheduler=preferred_scheduler,
+                    nnode=nnode,
+                    nproc=nprocs)
+                scheduler.print_schedule()
+                MultiProcSpecInstaller().install_dag(scheduler, kwargs)
 
             # spec.package.do_install(**kwargs)
 
