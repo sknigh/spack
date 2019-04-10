@@ -829,9 +829,9 @@ class TwoStepSchedulerBase(DagSchedulerBase):
 
         return list(scheduled)
 
-    def sequential_estimate(self):
+    def sequential_estimate(self, nproc):
         """Gets expected execution time if the tasks were run in serial"""
-        return sum(t.exec_time(get_cpu_count()) for t in self.tasks)
+        return sum(t.exec_time(nproc) for t in self.tasks)
 
     def install_successful(self, spec):
         task = self.spec_to_task[spec]
@@ -1093,6 +1093,7 @@ def schedule_selector(specs,
     tty.msg('Created DAG with %s Specs' % dm.count())
 
     if not timing_db or preferred_scheduler.lower() == 'simple':
+        print(timing_db, preferred_scheduler)
         # No timing information prevents sophisticated scheduling
         tty.msg('Selected SimpleDagScheduler')
         return SimpleDagScheduler(dag_manager=dm)
@@ -1176,20 +1177,22 @@ def compare_schedules(spec,
     cpr_makespan = cpr_sched.get_makespan()
     filt80_cpr_makespan = filt80_cpr_sched.get_makespan()
 
-    tty.msg('CPA makespan:           %6ss creation time: %s' % (
-        round(cpa_makespan, 1), cpa_sched.sched_build_time()))
-    tty.msg('MCPA makespan:          %6ss creation time: %s' % (
-        round(mcpa_makespan, 1), mcpa_sched.sched_build_time()))
-    tty.msg('CPR  makespan:          %6ss creation time: %s' % (
-        round(cpr_makespan, 1), cpr_sched.sched_build_time()))
-    tty.msg('Filtered CPR  makespan: %6ss creation time: %s' % (
-        round(filt80_cpr_makespan, 1), filt80_cpr_sched.sched_build_time()))
-    tty.msg('Sequential makespan:        %6ss' %
-            round(mcpa_sched.sequential_estimate(), 1))
+    # tty.msg('CPA makespan:           %6ss creation time: %s' % (
+    #     round(cpa_makespan, 1), cpa_sched.sched_build_time()))
+    # tty.msg('MCPA makespan:          %6ss creation time: %s' % (
+    #     round(mcpa_makespan, 1), mcpa_sched.sched_build_time()))
+    # tty.msg('CPR  makespan:          %6ss creation time: %s' % (
+    #     round(cpr_makespan, 1), cpr_sched.sched_build_time()))
+    # tty.msg('Filtered CPR  makespan: %6ss creation time: %s' % (
+    #     round(filt80_cpr_makespan, 1), filt80_cpr_sched.sched_build_time()))
+    # tty.msg('Sequential makespan:        %6ss' %
+    #         round(mcpa_sched.sequential_estimate(), 1))
 
     # mcpa_sched.print_schedule()
     #cpr_sched.print_schedule()
     #filt80_cpr_sched.print_schedule()
+
+    cpr_sched.print_schedule()
 
     s = spec.name
     print([s, 'Filtered CPR', filt80_cpr_sched.get_makespan(),
@@ -1200,7 +1203,7 @@ def compare_schedules(spec,
            mcpa_sched.sched_build_time().total_seconds()], ',')
     print([s, 'CPA', cpa_sched.get_makespan(),
            cpa_sched.sched_build_time().total_seconds()], ',')
-    print([s, 'Sequential', cpr_sched.sequential_estimate(), 0], ',')
+    print([s, 'Sequential', cpr_sched.sequential_estimate(nproc), 0], ',')
 
 
 def compare_large_schedules(specs,
