@@ -35,6 +35,7 @@ import shutil
 import six
 import sys
 import time
+from datetime import datetime
 
 import llnl.util.filesystem as fs
 import llnl.util.lock as lk
@@ -52,6 +53,7 @@ from llnl.util.tty.color import colorize
 from llnl.util.tty.log import log_output
 from spack.util.environment import dump_environment
 from spack.util.executable import which
+from spack.timings_database import TimingsDatabase
 
 
 #: Counter to support unique spec sequencing that is used to ensure packages
@@ -569,6 +571,7 @@ install_args_docstring = """
             use_cache (bool): Install from binary package, if available.
             verbose (bool): Display verbose build output (by default,
                 suppresses it)
+            time_phases (bool): Emit phase execution times into a sqlite database
         """
 
 
@@ -1012,6 +1015,8 @@ class PackageInstaller(object):
         unsigned = kwargs.get('unsigned', False)
         use_cache = kwargs.get('use_cache', True)
         verbose = kwargs.get('verbose', False)
+        time_phases = kwargs.get('time_phases', False)
+        make_jobs = kwargs.get('jobs')
 
         pkg = task.pkg
         pkg_id = package_id(pkg)
@@ -1074,6 +1079,9 @@ class PackageInstaller(object):
                                 .format(pre, src_target))
                         fs.install_tree(pkg.stage.source_path, src_target)
 
+                    if time_phases:
+                        td = TimingsDatabase()
+
                     # Do the real install in the source directory.
                     with fs.working_dir(pkg.stage.source_path):
                         # Save the build environment in a file before building.
@@ -1101,6 +1109,9 @@ class PackageInstaller(object):
                             for phase_name, phase_attr in zip(
                                     pkg.phases, pkg._InstallPhase_phases):
 
+                                if time_phases:
+                                    start = datetime.now()
+
                                 with logger.force_echo():
                                     inner_debug = tty.is_debug()
                                     tty.set_debug(debug_enabled)
@@ -1111,6 +1122,13 @@ class PackageInstaller(object):
                                 # Redirect stdout and stderr to daemon pipe
                                 phase = getattr(pkg, phase_attr)
                                 phase(pkg.spec, pkg.prefix)
+
+                                if time_phases:
+                                    tot_time = (datetime.now() - start)
+                                    td.add_phase_time(pkg.name,
+                                                      phase_name,
+                                                      make_jobs,
+                                                      tot_time.total_seconds())
 
                     echo = logger.echo
                     log(pkg)

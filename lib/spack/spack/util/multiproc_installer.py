@@ -13,26 +13,20 @@ from spack.util.web import NonDaemonPool
 def get_cpu_count():
     return int(cpu_count()/2)
 
-
+# Runs in a separate process and reads from job queue
 def install_from_queue(work_queue, installation_result_queue, kwargs):
     while True:
         try:
             jobs, serialized_spec = work_queue.get(block=True)
             spec = Spec.from_yaml(serialized_spec).concretized()
 
-            if jobs:
-                kwargs['make_jobs'] = jobs
-
-            if kwargs['make_jobs'] is None:
-                kwargs['make_jobs'] = get_cpu_count()
-
-            kwargs['install_deps'] = False
+            kwargs['make_jobs'] = jobs if jobs else kwargs['jobs']
 
             tty.msg(
-                'Installing %s with %s jobs' % (spec.name, kwargs['make_jobs']))
-            with tty.SuppressOutput(msg_enabled=False,
-                                    warn_enabled=False,
-                                    error_enabled=False):
+                'Installing %s with %s jobs' % (spec.name, jobs))
+            with tty.SuppressOutput(msg_enabled=True,
+                                    warn_enabled=True,
+                                    error_enabled=True):
                     spec.package.do_install(**kwargs)
 
             installation_result_queue.put_nowait((None, serialized_spec))
@@ -75,7 +69,9 @@ class MultiProcSpecInstaller(SpecInstaller):
 
                 # Create a process for each core, initialize it with async
                 # queue for sending specs/receiving results
-                for _ in range(get_cpu_count()):
+                cores = get_cpu_count()
+
+                for _ in range(cores):
                     pool.apply_async(install_from_queue,
                                      (work_queue,
                                       installation_result_queue,
@@ -90,13 +86,17 @@ class MultiProcSpecInstaller(SpecInstaller):
                 #     'Installing', 'Ready', 'Unscheduled'))
 
                 while len(ready_specs) > 0 or len(outstanding_installs) > 0:
+                    print("ready_specs", ready_specs, " ", "outstanding_installs", outstanding_installs)
                     for jobs, spec in ready_specs:
                         # Note: to_json does not support all_deps
                         work_queue.put_nowait(
-                            (jobs, spec.to_yaml(all_deps=True)))
+                            #(jobs, spec.to_yaml(all_deps=True)))
+                            (jobs, spec.to_yaml()))
                         outstanding_installs[spec.full_hash()] = spec
 
                     ready_specs.clear()
+
+                    ## TODO no progress made...
 
                     # Block until something finishes
                     # TODO put a timeout and TimeoutError handler here

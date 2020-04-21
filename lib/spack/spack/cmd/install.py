@@ -19,7 +19,7 @@ import spack.environment as ev
 import spack.fetch_strategy
 import spack.paths
 import spack.report
-from spack.util.dagscheduler import schedule_selector, TwoStepSchedulerBase, compare_schedules, compare_large_schedules
+from spack.util.dagscheduler import schedule_selector, TwoStepSchedulerBase, compare_schedules
 from spack.util.multiproc_installer import MultiProcSpecInstaller
 from spack.timings_database import TimingsDatabase
 from spack.error import SpackError
@@ -56,6 +56,7 @@ def update_kwargs_from_args(args, kwargs):
         'scheduler': args.scheduler,
         'nnode': args.nnode,
         'compare_schedulers': args.compare_schedulers,
+        'jobs': args.jobs
     })
 
     kwargs.update({
@@ -273,21 +274,23 @@ def install_spec(cli_args, kwargs, abstract_spec, spec):
 
             use_timings = kwargs['use_timings']
             timings_db = TimingsDatabase(use_timings) if use_timings else None
-
-            nprocs = kwargs['make_jobs']
-            nprocs = int(nprocs) if nprocs else get_cpu_count()
+            nprocs = int(cli_args.jobs) if cli_args.jobs else get_cpu_count()
 
             if kwargs['compare_schedulers']:
                 compare_schedules(spec, timings_db, compare_schedulers.lower() == 'phase', nprocs, nnode)
             else:
+                
                 scheduler = schedule_selector(
                     [spec],
                     timing_db=timings_db,
                     preferred_scheduler=preferred_scheduler,
                     nnode=nnode,
                     nproc=nprocs)
-                scheduler.print_schedule()
-                MultiProcSpecInstaller().install_dag(scheduler, kwargs)
+
+                # TODO include make_jobs in kwargs globally
+                kwargs_copy = kwargs.copy()
+                kwargs_copy['make_jobs'] = cli_args.jobs
+                MultiProcSpecInstaller().install_dag(scheduler, kwargs_copy)
 
             # spec.package.do_install(**kwargs)
 
