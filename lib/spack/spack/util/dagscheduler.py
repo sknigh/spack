@@ -35,7 +35,7 @@ class SpecNode:
         for dep_spec in spec._dependencies.values():
             yield dep_spec.spec
 
-
+# TODO: Should be deprecated
 class ParallelConcretizer:
     """Concretizes Specs using parallel workers
     For best utilization, pass a large list of specs to concrete_specs_gen
@@ -1088,14 +1088,13 @@ def schedule_selector(specs,
     information"""
 
     dm = DagManager()
-    dm.add_specs(specs, 2)
+    dm.add_specs(specs, 1)
     dm.prune_installed()
     tty.msg('Created DAG with %s Specs' % dm.count())
 
     if not timing_db or preferred_scheduler.lower() == 'simple':
-        print(timing_db, preferred_scheduler)
         # No timing information prevents sophisticated scheduling
-        tty.msg('Selected SimpleDagScheduler')
+        tty.msg('Selected SimpleDagScheduler' + " (No timing data)" if not timing_db else "")
         return SimpleDagScheduler(dag_manager=dm)
 
     if preferred_scheduler.lower() == 'cpr':
@@ -1137,7 +1136,7 @@ def schedule_selector(specs,
     if cpr_makespan < mcpa_makespan or preferred_scheduler == 'CPRDagScheduler':
         tty.msg('Selected CPRDagScheduler')
         return cpr_sched
-    if mcpa_sched.sequential_estimate() < mcpa_makespan:
+    if mcpa_sched.sequential_estimate(nproc) < mcpa_makespan:
         tty.msg('Selected SimpleDagScheduler')
         return SimpleDagScheduler(dag_manager=dm)
     else:
@@ -1249,11 +1248,8 @@ def compare_large_schedules(specs,
 
 def max_speedup_list_for_stack(specs, timing_db, nproc):
     dm = DagManager()
-    dm.add_specs(specs, 4)
+    dm.add_specs(specs, 2)
     dm.prune_installed()
-    #
-    # sched = CPADagScheduler(dm)
-    # sched.build_schedule(nproc=nprocs, nnode=1)
 
     def mk_sched(sched_type):
         sched = sched_type(timing_db, dag_manager=dm)
